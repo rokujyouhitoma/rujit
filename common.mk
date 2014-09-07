@@ -96,6 +96,7 @@ COMMONOBJS    = array.$(OBJEXT) \
 		vm_dump.$(OBJEXT) \
 		vm_backtrace.$(OBJEXT) \
 		vm_trace.$(OBJEXT) \
+		jit.$(OBJEXT) \
 		thread.$(OBJEXT) \
 		cont.$(OBJEXT) \
 		$(BUILTIN_ENCOBJS) \
