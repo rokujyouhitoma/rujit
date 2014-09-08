@@ -10,18 +10,34 @@
 
 #include "ruby/ruby.h"
 #include "ruby/vm.h"
+#include "gc.h"
 #include "vm_core.h"
 #include "internal.h"
-#include "jit_opts.h"
-#include "jit_prelude.c"
 #include "insns.inc"
 #include "insns_info.inc"
+
+#include "jit_opts.h"
+#include "jit_prelude.c"
+#include "jit_hashmap.c"
 
 static int disable_jit = 0;
 
 typedef struct rb_jit_t rb_jit_t;
 
 typedef struct jit_trace trace_t;
+
+struct memory_pool {
+    struct page_chunk *head;
+    struct page_chunk *root;
+    unsigned pos;
+    unsigned size;
+};
+
+#define HOT_TRACE_THRESHOLD 4
+struct jit_trace {
+    VALUE *last_pc;
+    long counter;
+};
 
 typedef struct jit_event_t {
     rb_thread_t *th;
@@ -31,6 +47,37 @@ typedef struct jit_event_t {
     int opcode;
     int trace_error;
 } jit_event_t;
+
+typedef struct trace_recorder_t {
+    jit_event_t *current_event;
+    //basicblock_t *cur_bb;
+    //basicblock_t *entry_bb;
+    struct memory_pool mp;
+} trace_recorder_t;
+
+typedef enum trace_mode {
+    TraceModeDefault = 0,
+    TraceModeRecording = 1,
+    TraceModeError = -1
+} trace_mode_t;
+
+#define TRACE_ERROR_INFO(OP, OP_TAIL)                                     \
+    OP(OK, "ok")                                                          \
+    OP(NATIVE_METHOD, "invoking native method")                           \
+    OP(THROW, "throw exception")                                          \
+    OP(UNSUPPORT_OP, "not supported bytecode")                            \
+    OP(LEAVE, "this trace return into native method")                     \
+    OP(REGSTACK_UNDERFLOW, "register stack underflow")                    \
+    OP(ALREADY_RECORDED, "this instruction is already recorded on trace") \
+    OP(TRACE_ERROR_BUFFER_FULL, "trace buffer is full")                   \
+    OP_TAIL(TRACE_ERROR_END, "")
+
+struct rb_jit_t {
+    VALUE self;
+    trace_recorder_t *recorder;
+    trace_mode_t mode;
+    hashmap_t traces;
+};
 
 static int get_opcode(rb_control_frame_t *cfp, VALUE *reg_pc)
 {
@@ -80,9 +127,41 @@ static void jit_default_params_setup(rb_jit_t *jit)
 {
 }
 
+static void jit_mark(void *ptr)
+{
+    RUBY_MARK_ENTER("jit");
+    if (ptr) {
+    }
+    RUBY_MARK_LEAVE("jit");
+}
+
+static size_t jit_memsize(const void *ptr)
+{
+    size_t size = 0;
+    if (ptr) {
+    }
+    return size;
+}
+
+static const rb_data_type_t jit_data_type = {
+    "JIT",
+    {
+      jit_mark, NULL, jit_memsize,
+    },
+    NULL,
+    NULL,
+    RUBY_TYPED_FREE_IMMEDIATELY
+};
+
 static rb_jit_t *jit_init()
 {
-    rb_jit_t *jit = NULL;
+    rb_jit_t *jit = (rb_jit_t *)malloc(sizeof(*jit));
+    VALUE rb_cJit = rb_define_class("Jit", rb_cObject);
+    rb_undef_alloc_func(rb_cJit);
+    rb_undef_method(CLASS_OF(rb_cJit), "new");
+    jit->self = TypedData_Wrap_Struct(rb_cJit, &jit_data_type, jit);
+    rb_gc_register_mark_object(jit->self);
+
     jit_default_params_setup(jit);
     return jit;
 }
@@ -90,11 +169,8 @@ static rb_jit_t *jit_init()
 static void jit_delete(rb_jit_t *jit)
 {
     if (jit) {
-	//
+	free(jit);
     }
-    // remove compiler warnings
-    (void)insn_op_types;
-    (void)insn_op_type;
 }
 
 void Init_rawjit()
@@ -113,28 +189,69 @@ void Destruct_rawjit()
 	jit_delete(current_jit);
 	current_jit = NULL;
     }
+    // remove compiler warnings
+    (void)insn_op_types;
+    (void)insn_op_type;
 }
 
-#define HOT_TRACE_THRESHOLD 4
-struct jit_trace {
-    VALUE *last_pc;
-    long counter;
+/* memory pool { */
+#define SIZEOF_MEMORY_POOL (4096 - sizeof(void *))
+struct page_chunk {
+    struct page_chunk *next;
+    char buf[SIZEOF_MEMORY_POOL];
 };
 
-typedef struct trace_recorder_t {
-} trace_recorder_t;
+static void memory_pool_init(struct memory_pool *mp)
+{
+    mp->pos = 0;
+    mp->size = SIZEOF_MEMORY_POOL;
+    mp->head = mp->root = NULL;
+}
 
-struct rb_jit_t {
-    trace_recorder_t *recorder;
-};
+static void memory_pool_reset(struct memory_pool *mp, int alloc_memory)
+{
+    struct page_chunk *root = mp->root;
+    struct page_chunk *page = root->next;
+    while (page != NULL) {
+	struct page_chunk *next = page->next;
+	free(page);
+	page = next;
+    }
+    if (!alloc_memory) {
+	free(root);
+	root = NULL;
+    }
+    mp->pos = 0;
+    mp->size = SIZEOF_MEMORY_POOL;
+    mp->head = mp->root = root;
+}
+
+static void *memory_pool_alloc(struct memory_pool *mp, size_t size)
+{
+    void *ptr;
+    if (mp->pos + size > mp->size) {
+	struct page_chunk *page;
+	page = (struct page_chunk *)malloc(sizeof(struct page_chunk));
+	page->next = NULL;
+	mp->head->next = page;
+	mp->head = page;
+	mp->pos = 0;
+    }
+    ptr = mp->head->buf + mp->pos;
+    memset(ptr, 0, size);
+    mp->pos += size;
+    return ptr;
+}
+/* } memory pool */
 
 static int is_recording(rb_jit_t *jit)
 {
-    return 0;
+    return (jit->mode &= TraceModeRecording) == TraceModeRecording;
 }
 
 static void set_recording(rb_jit_t *jit)
 {
+    jit->mode |= TraceModeRecording;
 }
 
 static trace_t *create_new_trace(rb_jit_t *jit, jit_event_t *e)
