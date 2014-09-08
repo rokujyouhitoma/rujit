@@ -74,14 +74,36 @@ error !
 #define ELABEL(x) INSN_ELABEL_##x
 #define LABEL_PTR(x) &&LABEL(x)
 
-#define INSN_ENTRY_SIG(insn)
+#define DEBUG_JIT_DISPATCH(NEW_PC, CUR_PC) do {\
+  fprintf(stderr, "%p/%p\n", NEW_PC, CUR_PC);\
+  long pc = GET_PC_COUNT();\
+  int  op = (int)(GET_ISEQ()->iseq[pc]);\
+  fprintf(stderr, "%04ld pc=%p %02d %s\n", pc, reg_pc, op, rb_insns_name(op));\
+} while (0)
 
+#ifndef DISABLE_JIT
+#define JIT_TRACE(insn) do {\
+  VALUE *CUR_PC = GET_PC();\
+  VALUE *NEW_PC = rb_jit_trace(th, GET_CFP(), CUR_PC);\
+  if(NEW_PC != CUR_PC) {\
+    /*DEBUG_JIT_DISPATCH(NEW_PC, CUR_PC);*/\
+    RESTORE_REGS();\
+    SET_PC(NEW_PC);\
+    TC_DISPATCH(__START__);\
+  }\
+} while (0)
+#else
+#define JIT_TRACE(insn)
+#endif
+
+#define INSN_ENTRY_SIG(insn)
 
 #define INSN_DISPATCH_SIG(insn)
 
 #define INSN_ENTRY(insn) \
   LABEL(insn): \
   INSN_ENTRY_SIG(insn); \
+  JIT_TRACE(insn);\
 
 /* dispatcher */
 #if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__)) && __GNUC__ == 3

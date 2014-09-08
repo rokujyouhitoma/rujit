@@ -829,7 +829,29 @@ vm.$(OBJEXT): {$(VPATH)}vm.c {$(VPATH)}gc.h {$(VPATH)}iseq.h \
   {$(VPATH)}vm_exec.h {$(VPATH)}insns.def {$(VPATH)}vmtc.inc \
   {$(VPATH)}vm.inc {$(VPATH)}insns.inc \
   {$(VPATH)}internal.h {$(VPATH)}vm.h {$(VPATH)}constant.h \
-  $(PROBES_H_INCLUDES) {$(VPATH)}probes_helper.h {$(VPATH)}vm_opts.h
+  $(PROBES_H_INCLUDES) {$(VPATH)}probes_helper.h {$(VPATH)}vm_opts.h \
+  {$(VPATH)}jit.h
+
+lir.c: $(srcdir)/lir.def $(srcdir)/lir.rb \
+  $(srcdir)/lir_template.h
+	$(ECHO) creating $@
+	$(Q) $(BASERUBY) "$(srcdir)/lir.rb" $(srcdir)/lir.def $(srcdir)/lir_template.h > $@
+
+yarv2lir.c: {$(VPATH)}lir.def {$(VPATH)}yarv2lir.rb
+	$(ECHO) creating $@
+	$(Q) $(BASERUBY) "$(srcdir)/yarv2lir.rb" > $@
+
+jit_prelude.c: $(srcdir)/tool/compile_prelude.rb $(srcdir)/jit_prelude.rb
+	$(ECHO) generating $@
+	$(Q) $(BASERUBY) -I$(srcdir) $(srcdir)/tool/compile_prelude.rb $(srcdir)/jit_prelude.rb $@
+
+jit.$(OBJEXT): {$(VPATH)}jit.c {$(VPATH)}jit_opts.h \
+	{$(VPATH)}jit_prelude.c \
+	{$(VPATH)}jit_hashmap.c \
+	{$(VPATH)}lir.c {$(VPATH)}yarv2lir.c
+	@$(ECHO) compiling $<
+	$(Q) $(CC) $(CFLAGS) $(XCFLAGS) $(CPPFLAGS) $(COUTFLAG)$@ -c $<
+
 vm_dump.$(OBJEXT): {$(VPATH)}vm_dump.c $(RUBY_H_INCLUDES) \
   $(VM_CORE_H_INCLUDES) {$(VPATH)}addr2line.h \
   {$(VPATH)}internal.h {$(VPATH)}vm_opts.h
