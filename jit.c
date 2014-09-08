@@ -33,10 +33,24 @@ struct memory_pool {
     unsigned size;
 };
 
+typedef struct const_pool {
+    uintptr_t *list;
+    unsigned size;
+    unsigned capacity;
+} const_pool_t;
+
 #define HOT_TRACE_THRESHOLD 4
+struct trace_side_exit_handler;
 struct jit_trace {
+    void *code;
+    VALUE *start_pc;
     VALUE *last_pc;
+    struct trace_side_exit_handler *parent;
+    // for debug usage
+    const rb_iseq_t *iseq;
     long counter;
+    void *handler;
+    const_pool_t cpool;
 };
 
 typedef struct jit_event_t {
@@ -61,7 +75,7 @@ typedef enum trace_mode {
     TraceModeError = -1
 } trace_mode_t;
 
-#define TRACE_ERROR_INFO(OP, OP_TAIL)                                     \
+#define TRACE_ERROR_INFO(OP, TAIL)                                        \
     OP(OK, "ok")                                                          \
     OP(NATIVE_METHOD, "invoking native method")                           \
     OP(THROW, "throw exception")                                          \
@@ -70,7 +84,17 @@ typedef enum trace_mode {
     OP(REGSTACK_UNDERFLOW, "register stack underflow")                    \
     OP(ALREADY_RECORDED, "this instruction is already recorded on trace") \
     OP(TRACE_ERROR_BUFFER_FULL, "trace buffer is full")                   \
-    OP_TAIL(TRACE_ERROR_END, "")
+    TAIL
+
+#define DEFINE_TRACE_ERROR_STATE(NAME, MSG) TRACE_ERROR_##NAME,
+#define DEFINE_TRACE_ERROR_MESSAGE(NAME, MSG) MSG,
+enum trace_error_state {
+    TRACE_ERROR_INFO(DEFINE_TRACE_ERROR_STATE, TRACE_ERROR_END = -1)
+};
+
+static const char *trace_error_message[] = {
+    TRACE_ERROR_INFO(DEFINE_TRACE_ERROR_MESSAGE, "")
+};
 
 struct rb_jit_t {
     VALUE self;
@@ -243,6 +267,58 @@ static void *memory_pool_alloc(struct memory_pool *mp, size_t size)
     return ptr;
 }
 /* } memory pool */
+
+/* const pool { */
+#define CONST_POOL_API static
+
+#define CONST_POOL_INIT_SIZE 1
+CONST_POOL_API const_pool_t *const_pool_init(const_pool_t *self)
+{
+    self->list = NULL;
+    self->size = 0;
+    self->capacity = 0;
+    return self;
+}
+
+CONST_POOL_API int const_pool_contain(const_pool_t *self, const void *ptr)
+{
+    unsigned i;
+    for (i = 0; i < self->size; i++) {
+	if (self->list[i] == (uintptr_t)ptr) {
+	    return 1;
+	}
+    }
+    return 0;
+}
+
+CONST_POOL_API void const_pool_add(const_pool_t *self, const void *ptr)
+{
+    if (const_pool_contain(self, ptr)) {
+	return;
+    }
+    if (self->size + 1 >= self->capacity) {
+	if (self->capacity == 0) {
+	    self->capacity = CONST_POOL_INIT_SIZE;
+	    self->list = (uintptr_t *)malloc(sizeof(uintptr_t) * self->capacity);
+	}
+	else {
+	    unsigned newcapacity;
+	    self->capacity *= 2;
+	    newcapacity = sizeof(uintptr_t) * self->capacity;
+	    self->list = (uintptr_t *)realloc(self->list, newcapacity);
+	}
+    }
+    self->list[self->size++] = (uintptr_t)ptr;
+}
+
+CONST_POOL_API void const_pool_delete(const_pool_t *self)
+{
+    if (self->list) {
+	free(self->list);
+    }
+    self->size = self->capacity = 0;
+}
+/* } const pool */
 
 static int is_recording(rb_jit_t *jit)
 {
