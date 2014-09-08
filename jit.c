@@ -12,6 +12,7 @@
 #include "ruby/vm.h"
 #include "vm_core.h"
 #include "internal.h"
+#include "jit_opts.h"
 #include "jit_prelude.c"
 #include "insns.inc"
 #include "insns_info.inc"
@@ -39,6 +40,17 @@ static int get_opcode(rb_control_frame_t *cfp, VALUE *reg_pc)
     int op = (int) (cfp->iseq->iseq[pc]);
     assert(0 <= op && op < VM_INSTRUCTION_SIZE);
     return op;
+}
+
+static int get_opcode(rb_control_frame_t *cfp, VALUE *pc);
+
+static void dump_inst(jit_event_t *e)
+{
+#if DUMP_INST > 0
+    long pc = (e->pc - e->cfp->iseq->iseq_encoded);
+    fprintf(stderr, "%04ld pc=%p %02d %s\n",
+	    pc, e->pc, e->opcode, insn_name(e->opcode));
+#endif
 }
 
 static jit_event_t *jit_init_event(jit_event_t *e, rb_jit_t *jit, rb_thread_t *th, rb_control_frame_t *cfp, VALUE *pc)
@@ -99,6 +111,7 @@ void Destruct_rawjit()
 
 static VALUE *trace_selection(rb_jit_t *jit, jit_event_t *e)
 {
+    dump_inst(e);
     return e->pc;
 }
 
