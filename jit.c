@@ -19,17 +19,15 @@
 
 static int disable_jit = 0;
 
-typedef struct rb_jit_t {
-    void *p;
-} rb_jit_t;
+typedef struct rb_jit_t rb_jit_t;
 
-typedef struct jit_trace jit_trace_t;
+typedef struct jit_trace trace_t;
 
 typedef struct jit_event_t {
     rb_thread_t *th;
     rb_control_frame_t *cfp;
     VALUE *pc;
-    jit_trace_t *trace;
+    trace_t *trace;
     int opcode;
     int trace_error;
 } jit_event_t;
@@ -84,11 +82,19 @@ static void jit_default_params_setup(rb_jit_t *jit)
 
 static rb_jit_t *jit_init()
 {
-    return NULL;
+    rb_jit_t *jit = NULL;
+    jit_default_params_setup(jit);
+    return jit;
 }
 
 static void jit_delete(rb_jit_t *jit)
 {
+    if (jit) {
+	//
+    }
+    // remove compiler warnings
+    (void)insn_op_types;
+    (void)insn_op_type;
 }
 
 void Init_rawjit()
@@ -109,9 +115,111 @@ void Destruct_rawjit()
     }
 }
 
+#define HOT_TRACE_THRESHOLD 4
+struct jit_trace {
+    VALUE *last_pc;
+    long counter;
+};
+
+typedef struct trace_recorder_t {
+} trace_recorder_t;
+
+struct rb_jit_t {
+    trace_recorder_t *recorder;
+};
+
+static int is_recording(rb_jit_t *jit)
+{
+    return 0;
+}
+
+static void set_recording(rb_jit_t *jit)
+{
+}
+
+static trace_t *create_new_trace(rb_jit_t *jit, jit_event_t *e)
+{
+    return NULL;
+}
+
+static trace_t *find_trace(rb_jit_t *jit, jit_event_t *e)
+{
+    return NULL;
+}
+
+static int is_backward_branch(jit_event_t *e, VALUE **target_pc_ptr)
+{
+    return 0;
+}
+
+static int is_compiled_trace(trace_t *trace)
+{
+    return 0;
+}
+
+static int is_end_of_trace(rb_jit_t *jit, jit_event_t *e)
+{
+    return 0;
+}
+
+static void append_to_tracebuffer(trace_recorder_t *rec, jit_event_t *e)
+{
+}
+
+static void compile_trace(rb_jit_t *jit)
+{
+}
+
+static VALUE *trace_invoke(rb_jit_t *jit, jit_event_t *e, trace_t *trace)
+{
+    return e->pc;
+}
+
+static void trace_reset(trace_t *trace, int alloc_memory)
+{
+}
+
+static void tracebuffer_clear(trace_recorder_t *rec, int alloc_memory)
+{
+}
+
+static void tracebuffer_set_trace(trace_recorder_t *rec, trace_t *trace)
+{
+}
+
 static VALUE *trace_selection(rb_jit_t *jit, jit_event_t *e)
 {
-    dump_inst(e);
+    trace_t *trace = NULL;
+    VALUE *target_pc = NULL;
+    if (is_recording(jit)) {
+	if (is_end_of_trace(jit, e)) {
+	    compile_trace(jit);
+	}
+	else {
+	    append_to_tracebuffer(jit->recorder, e);
+	}
+	return e->pc;
+    }
+    trace = find_trace(jit, e);
+    if (is_compiled_trace(trace)) {
+	return trace_invoke(jit, e, trace);
+    }
+    if (is_backward_branch(e, &target_pc)) {
+	if (!trace) {
+	    trace = create_new_trace(jit, e);
+	}
+	trace->last_pc = target_pc;
+    }
+    if (trace) {
+	trace->counter += 1;
+	if (trace->counter > HOT_TRACE_THRESHOLD) {
+	    set_recording(jit);
+	    tracebuffer_set_trace(jit->recorder, trace);
+	    trace_reset(trace, 1);
+	    tracebuffer_clear(jit->recorder, 1);
+	    append_to_tracebuffer(jit->recorder, e);
+	}
+    }
     return e->pc;
 }
 
