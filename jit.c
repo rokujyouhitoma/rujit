@@ -16,6 +16,7 @@
 #include "insns.inc"
 #include "insns_info.inc"
 #include "vm_insnhelper.h"
+#include "vm_exec.h"
 
 #include "jit_opts.h"
 #include "jit_prelude.c"
@@ -205,6 +206,7 @@ static rb_jit_t *jit_init()
     jit->self = TypedData_Wrap_Struct(rb_cJit, &jit_data_type, jit);
     rb_gc_register_mark_object(jit->self);
 
+    hashmap_init(&jit->traces, 1);
     jit_default_params_setup(jit);
     return jit;
 }
@@ -212,6 +214,8 @@ static rb_jit_t *jit_init()
 static void jit_delete(rb_jit_t *jit)
 {
     if (jit) {
+	// FIXME need to free allocated traces
+	hashmap_dispose(&jit->traces, NULL);
 	free(jit);
     }
 }
@@ -356,17 +360,24 @@ static trace_t *create_new_trace(rb_jit_t *jit, jit_event_t *e)
 
 static trace_t *find_trace(rb_jit_t *jit, jit_event_t *e)
 {
-    return NULL;
+    return (trace_t *)hashmap_get(&jit->traces, (hashmap_data_t)e->pc);
 }
 
 static int is_backward_branch(jit_event_t *e, VALUE **target_pc_ptr)
 {
-    return 0;
+    OFFSET dst;
+    rb_control_frame_t *reg_cfp = e->cfp;
+    if (e->opcode != BIN(branchif)) {
+	return 0;
+    }
+    dst = (OFFSET)GET_OPERAND(1);
+    *target_pc_ptr = e->pc + insn_len(BIN(branchif)) + dst;
+    return dst < 0;
 }
 
 static int is_compiled_trace(trace_t *trace)
 {
-    return 0;
+    return trace && trace->handler && trace->code;
 }
 
 static int already_recorded_on_trace(jit_event_t *e)
@@ -537,3 +548,4 @@ VALUE *rb_jit_trace(rb_thread_t *th, rb_control_frame_t *reg_cfp, VALUE *reg_pc)
     jit_event_t *e = jit_init_event(&ebuf, current_jit, th, reg_cfp, reg_pc);
     return trace_selection(current_jit, e);
 }
+//#include "yarv2lir.c"
