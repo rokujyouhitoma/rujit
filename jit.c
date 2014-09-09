@@ -73,6 +73,10 @@ typedef struct lir_basicblock_t {
     jit_list_t preds;
 } basicblock_t;
 
+typedef struct regstack {
+    jit_list_t list;
+} regstack_t;
+
 typedef struct trace_side_exit_handler trace_side_exit_handler_t;
 struct jit_trace {
     void *code;
@@ -129,6 +133,7 @@ typedef struct trace_recorder_t {
     unsigned flag;
     unsigned last_inst_id;
     struct memory_pool mp;
+    regstack_t regstack;
 } trace_recorder_t;
 
 typedef enum trace_mode {
@@ -489,6 +494,75 @@ static void basicblock_append(basicblock_t *bb, lir_inst_t *inst)
     jit_list_add(&bb->insts, (uintptr_t)inst);
 }
 /* } basicblock */
+
+/* regstack { */
+static regstack_t *regstack_init(regstack_t *stack)
+{
+    int i;
+    jit_list_init(&stack->list);
+    for (i = 0; i < LIR_RESERVED_REGSTACK_SIZE; i++) {
+	jit_list_add(&stack->list, 0);
+    }
+    return stack;
+}
+
+static void regstack_push(regstack_t *stack, lir_t reg)
+{
+    assert(reg != NULL);
+    jit_list_add(&stack->list, (uintptr_t)reg);
+    if (DUMP_STACK_MAP) {
+	fprintf(stderr, "push: %d %p\n", stack->list.size, reg);
+    }
+}
+
+static lir_t regstack_pop(regstack_t *stack)
+{
+    lir_t reg;
+    if (stack->list.size == 0) {
+	assert(0 && "FIXME stack underflow");
+    }
+    reg = (lir_t)jit_list_get(&stack->list, --stack->list.size);
+    if (reg == NULL) {
+	assert(0 && "FIXME adjust stack");
+    }
+    if (DUMP_STACK_MAP) {
+	fprintf(stderr, "pop: %d %p\n", stack->list.size, reg);
+    }
+    return reg;
+}
+
+static void regstack_set(regstack_t *stack, int n, lir_t reg)
+{
+    n = stack->list.size - n - 1;
+    assert(0 <= n && n < stack->list.size);
+    if (DUMP_STACK_MAP) {
+	fprintf(stderr, "set: %d %p\n", n, reg);
+    }
+    assert(reg != NULL);
+    jit_list_set(&stack->list, n, (uintptr_t)reg);
+}
+
+static lir_t regstack_top(regstack_t *stack, int n)
+{
+    lir_t reg;
+    int i, idx = stack->list.size - n - 1;
+    assert(0 <= n && n < stack->list.size);
+    reg = (lir_t)jit_list_get(&stack->list, n);
+    if (reg == NULL && n < LIR_RESERVED_REGSTACK_SIZE) {
+	assert(0 && "FIXME stack underflow");
+    }
+    assert(reg != NULL);
+    if (DUMP_STACK_MAP) {
+	fprintf(stderr, "top: %d %p\n", n, reg);
+    }
+    return reg;
+}
+
+static void regstack_delete(regstack_t *stack)
+{
+    jit_list_delete(&stack->list);
+}
+/* } regstack */
 
 /* trace_recorder { */
 static trace_recorder_t *trace_recorder_new()
