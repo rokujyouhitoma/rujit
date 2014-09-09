@@ -33,6 +33,36 @@ check_cfunc(const rb_method_entry_t *me, VALUE (*func)())
     return me && me->def->type == VM_METHOD_TYPE_CFUNC && me->def->body.cfunc.func == func;
 }
 
+/* original code is copied from vm_insnhelper.c vm_getivar() */
+static int vm_load_cache(VALUE obj, ID id, IC ic, rb_call_info_t *ci, int is_attr)
+{
+    if (RB_TYPE_P(obj, T_OBJECT)) {
+	VALUE klass = RBASIC(obj)->klass;
+	st_data_t index;
+	long len = ROBJECT_NUMIV(obj);
+	struct st_table *iv_index_tbl = ROBJECT_IV_INDEX_TBL(obj);
+
+	if (iv_index_tbl) {
+	    if (st_lookup(iv_index_tbl, id, &index)) {
+		if ((long)index < len) {
+		    //VALUE val = Qundef;
+		    //VALUE *ptr = ROBJECT_IVPTR(obj);
+		    //val = ptr[index];
+		}
+		if (!is_attr) {
+		    ic->ic_value.index = index;
+		    ic->ic_serial = RCLASS_SERIAL(klass);
+		}
+		else { /* call_info */
+		    ci->aux.index = index + 1;
+		}
+		return 1;
+	    }
+	}
+    }
+    return 0;
+}
+
 // rujit
 static int disable_jit = 0;
 
@@ -77,7 +107,12 @@ typedef struct regstack {
     jit_list_t list;
 } regstack_t;
 
+typedef struct call_stack {
+    jit_list_t list;
+} call_stack_t;
+
 typedef struct trace_side_exit_handler trace_side_exit_handler_t;
+
 struct jit_trace {
     void *code;
     VALUE *start_pc;
@@ -92,6 +127,7 @@ struct jit_trace {
 
 struct trace_side_exit_handler {
     trace_t *this_trace;
+    VALUE *exit_pc;
 };
 
 #define TRACE_ERROR_INFO(OP, TAIL)                                        \
@@ -129,10 +165,9 @@ typedef struct trace_recorder_t {
     basicblock_t *cur_bb;
     basicblock_t *entry_bb;
     struct lir_inst_t **insts;
-    unsigned inst_size;
     unsigned flag;
     unsigned last_inst_id;
-    struct memory_pool mp;
+    struct memory_pool mpool;
     regstack_t regstack;
 } trace_recorder_t;
 
@@ -459,7 +494,7 @@ static void *lir_inst_init(void *ptr, unsigned opcode)
 
 static lir_inst_t *lir_inst_allocate(trace_recorder_t *recorder, lir_inst_t *src, unsigned inst_size)
 {
-    lir_inst_t *dst = memory_pool_alloc(&recorder->mp, inst_size);
+    lir_inst_t *dst = memory_pool_alloc(&recorder->mpool, inst_size);
     memcpy(dst, src, inst_size);
     dst->id = recorder->last_inst_id++;
     return dst;
@@ -468,9 +503,10 @@ static lir_inst_t *lir_inst_allocate(trace_recorder_t *recorder, lir_inst_t *src
 /* } lir_inst */
 
 /* basicblock { */
-static basicblock_t *basicblock_new(struct memory_pool *mp)
+static basicblock_t *basicblock_new(struct memory_pool *mp, VALUE *start_pc)
 {
     basicblock_t *bb = (basicblock_t *)memory_pool_alloc(mp, sizeof(*bb));
+    bb->start_pc = start_pc;
     jit_list_init(&bb->insts);
     jit_list_init(&bb->succs);
     jit_list_init(&bb->preds);
@@ -487,6 +523,22 @@ static void basicblock_delete(basicblock_t *bb)
 static unsigned basicblock_size(basicblock_t *bb)
 {
     return bb->insts.size;
+}
+
+static void basicblock_replace_inst(basicblock_t *bb, lir_t oldinst, lir_t newinst)
+{
+    int idx = jit_list_indexof(&bb->insts, (uintptr_t)oldinst);
+    if (idx >= 0) {
+	jit_list_set(&bb->insts, idx, (uintptr_t)newinst);
+    }
+}
+
+static void basicblock_swap_inst(basicblock_t *bb, int idx1, int idx2)
+{
+    lir_t inst1 = (lir_t)jit_list_get(&bb->insts, idx1);
+    lir_t inst2 = (lir_t)jit_list_get(&bb->insts, idx2);
+    jit_list_set(&bb->insts, idx1, (uintptr_t)inst2);
+    jit_list_set(&bb->insts, idx2, (uintptr_t)inst1);
 }
 
 static void basicblock_append(basicblock_t *bb, lir_inst_t *inst)
@@ -569,20 +621,32 @@ static trace_recorder_t *trace_recorder_new()
 {
     trace_recorder_t *recorder = (trace_recorder_t *)malloc(sizeof(*recorder));
     memset(recorder, 0, sizeof(*recorder));
-    memory_pool_init(&recorder->mp);
+    memory_pool_init(&recorder->mpool);
     return recorder;
 }
 
 static void trace_recorder_delete(trace_recorder_t *recorder)
 {
-    memory_pool_init(&recorder->mp);
+    memory_pool_init(&recorder->mpool);
     free(recorder);
 }
 
 static int trace_recorder_is_full(trace_recorder_t *recorder)
 {
     /*reserve one instruction for EXIT */
-    return recorder->inst_size - 2 == LIR_MAX_TRACE_LENGTH;
+    return recorder->last_inst_id - 2 == LIR_MAX_TRACE_LENGTH;
+}
+
+static int trace_recorder_add_const(trace_recorder_t *recorder, lir_t reg, VALUE *value)
+{
+    assert(0 && "FIXME implement");
+    return 0;
+}
+
+static CALL_INFO trace_recorder_clone_cache(trace_recorder_t *recorder, CALL_INFO ci)
+{
+    assert(0 && "FIXME implement");
+    return 0;
 }
 
 static void compile_trace(rb_jit_t *jit, trace_recorder_t *recorder)
@@ -598,9 +662,9 @@ static VALUE *trace_invoke(rb_jit_t *jit, jit_event_t *e, trace_t *trace)
 
 static void tracebuffer_clear(trace_recorder_t *rec, int alloc_memory)
 {
-    rec->inst_size = 0;
     rec->last_inst_id = 0;
-    memory_pool_reset(&rec->mp, alloc_memory);
+    rec->last_inst_id = 0;
+    memory_pool_reset(&rec->mpool, alloc_memory);
 }
 
 static int peephole(trace_recorder_t *recorder, lir_inst_t *inst)
@@ -885,10 +949,7 @@ static void trace_reset(trace_t *trace, int alloc_memory)
 {
 }
 
-static void record_inst(trace_recorder_t *ecorder, jit_event_t *e)
-{
-    dump_inst(e);
-}
+static void record_insn(trace_recorder_t *ecorder, jit_event_t *e);
 
 static VALUE *trace_selection(rb_jit_t *jit, jit_event_t *e)
 {
@@ -900,7 +961,7 @@ static VALUE *trace_selection(rb_jit_t *jit, jit_event_t *e)
 	    compile_trace(jit, jit->recorder);
 	}
 	else {
-	    record_inst(jit->recorder, e);
+	    record_insn(jit->recorder, e);
 	}
 	return e->pc;
     }
@@ -920,7 +981,7 @@ static VALUE *trace_selection(rb_jit_t *jit, jit_event_t *e)
 	    set_recording(jit, trace);
 	    trace_reset(trace, 1);
 	    tracebuffer_clear(jit->recorder, 1);
-	    record_inst(jit->recorder, e);
+	    record_insn(jit->recorder, e);
 	}
     }
     return e->pc;
@@ -1048,5 +1109,122 @@ static void dump_trace(trace_recorder_t *rec)
 	//fprintf(stderr, "---------------\n");
     }
 }
+
+/* variable_table { */
+typedef struct variable_table {
+    jit_list_t table;
+    int level;
+} variable_table_t;
+
+static variable_table_t *variable_table_init(struct memory_pool *mp, int level)
+{
+    variable_table_t *vtable;
+    vtable = (variable_table_t *)memory_pool_alloc(mp, sizeof(*vtable));
+    vtable->level = level;
+    return vtable;
+}
+static void variable_table_expand(variable_table_t *vtable, int idx)
+{
+    assert(idx >= 0);
+    while (vtable->table.size > idx) {
+	jit_list_add(&vtable->table, 0);
+    }
+}
+
+static void variable_table_set(variable_table_t *vtable, int idx, lir_t reg)
+{
+    variable_table_expand(vtable, idx);
+    jit_list_set(&vtable->table, idx, (uintptr_t)reg);
+}
+
+static lir_t variable_table_get(variable_table_t *vtable, int idx)
+{
+    variable_table_expand(vtable, idx);
+    return (lir_t)jit_list_get(&vtable->table, idx);
+}
+
+static int variable_table_equal(variable_table_t *vt1, variable_table_t *vt2)
+{
+    unsigned i;
+    if (vt1->table.size != vt2->table.size) {
+	return 0;
+    }
+    for (i = 0; i < vt1->table.size; i++) {
+	lir_t r1 = variable_table_get(vt1, i);
+	lir_t r2 = variable_table_get(vt2, i);
+	if (r1 != r2) {
+	    return 0;
+	}
+    }
+    return 1;
+}
+
+static void variable_table_delete(variable_table_t *vtable)
+{
+    jit_list_delete(&vtable->table);
+}
+/* } variable_table */
+
+/* call_stack { */
+static call_stack_t *call_stack_new(struct memory_pool *mp)
+{
+    call_stack_t *cs = (call_stack_t *)memory_pool_alloc(mp, sizeof(*cs));
+    jit_list_init(&cs->list);
+    return cs;
+}
+
+static void call_stack_push(call_stack_t *cs, variable_table_t *vtable)
+{
+    jit_list_add(&cs->list, (uintptr_t)vtable);
+}
+
+static variable_table_t *call_stack_get(call_stack_t *cs, int idx)
+{
+    return (variable_table_t *)jit_list_get(&cs->list, idx);
+}
+
+static variable_table_t *call_stack_pop(call_stack_t *cs)
+{
+    variable_table_t *vtable = call_stack_get(cs, cs->list.size - 1);
+    cs->list.size -= 1;
+    return vtable;
+}
+
+static int call_stack_equal(call_stack_t *cs1, call_stack_t *cs2)
+{
+    unsigned i;
+    if (cs1->list.size != cs2->list.size) {
+	return 0;
+    }
+    for (i = 0; i < cs1->list.size; i++) {
+	variable_table_t *vtable1, *vtable2;
+	vtable1 = call_stack_get(cs1, i);
+	vtable2 = call_stack_get(cs2, i);
+	if (variable_table_equal(vtable1, vtable2)) {
+	    return 0;
+	}
+    }
+    return 1;
+}
+
+static call_stack_t *call_stack_clone(struct memory_pool *mp, call_stack_t *old)
+{
+    unsigned i;
+    call_stack_t *cs = call_stack_new(mp);
+    for (i = 0; i < old->list.size; i++) {
+	call_stack_push(cs, call_stack_get(old, i));
+    }
+    return cs;
+}
+
+static void call_stack_delete(call_stack_t *cs)
+{
+    unsigned i;
+    for (i = 0; i < cs->list.size; i++) {
+	variable_table_delete(call_stack_get(cs, i));
+    }
+    jit_list_delete(&cs->list);
+}
+/* } call_stack */
 
 #include "jit_record.c"
