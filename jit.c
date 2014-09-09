@@ -67,6 +67,7 @@ typedef struct lir_inst_t {
 
 typedef struct lir_basicblock_t {
     lir_inst_t base;
+    VALUE *start_pc;
     jit_list_t insts;
     jit_list_t succs;
     jit_list_t preds;
@@ -354,7 +355,7 @@ static int jit_list_indexof(jit_list_t *self, uintptr_t val)
 {
     unsigned i;
     for (i = 0; i < self->size; i++) {
-	if (self->list[i] == (uintptr_t)ptr) {
+	if (self->list[i] == (uintptr_t)val) {
 	    return i;
 	}
     }
@@ -380,10 +381,10 @@ static void jit_list_remove(jit_list_t *self, uintptr_t val)
 {
     int i;
     if ((i = jit_list_indexof(self, val)) != -1) {
-	if (i != list->size) {
-	    list->size -= 1;
-	    memmove(list->list + i, list->list + i + 1,
-	            sizeof(uintptr_t) * (list->size - i));
+	if (i != self->size) {
+	    self->size -= 1;
+	    memmove(self->list + i, self->list + i + 1,
+	            sizeof(uintptr_t) * (self->size - i));
 	}
     }
 }
@@ -918,19 +919,19 @@ static void dump_lir_inst(lir_inst_t *inst)
     }
 }
 
-static void dump_lir_block(BasicBlock *block)
+static void dump_lir_block(basicblock_t *block)
 {
     if (DUMP_LIR > 0) {
 	unsigned i = 0;
-	fprintf(stderr, "BB%ld (pc=%p)\n", block_id(block), block->start_pc);
-	for (i = 0; i < block->list.size; i++) {
-	    lir_inst_t *Inst = block->list.list[i];
-	    dump_lir_inst(Inst);
+	fprintf(stderr, "BB%ld (pc=%p)\n", lir_getid(&block->base), block->start_pc);
+	for (i = 0; i < block->insts.size; i++) {
+	    lir_inst_t *inst = (lir_inst_t *)block->insts.list[i];
+	    dump_lir_inst(inst);
 	}
     }
 }
 
-static void dump_side_exit(TraceRecorder *Rec)
+static void dump_side_exit(trace_recorder_t *rec)
 {
     if (DUMP_LIR > 0) {
 	// FIXME implement dump_side_exit
@@ -966,4 +967,5 @@ static void dump_trace(trace_recorder_t *rec)
 	//fprintf(stderr, "---------------\n");
     }
 }
-//#include "yarv2lir.c"
+
+#include "yarv2lir.c"
