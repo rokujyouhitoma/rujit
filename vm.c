@@ -1160,6 +1160,7 @@ rb_vm_check_redefinition_opt_method(const rb_method_entry_t *me, VALUE klass)
 
 	    ruby_vm_redefined_flag[bop] |= flag;
 	}
+	rb_jit_check_redefinition_opt_method(me, klass);
     }
 }
 
@@ -2734,8 +2735,14 @@ Init_VM(void)
 
     {
 	/* jit.c */
-	extern void Init_rawjit();
-	Init_rawjit();
+	extern void Init_rawjit(struct rb_vm_global_state *);
+	struct rb_vm_global_state state = {
+	    &ruby_vm_global_method_state,
+	    &ruby_vm_global_constant_state,
+	    &ruby_vm_class_serial,
+	    (short *)&ruby_vm_redefined_flag
+	};
+	Init_rawjit(&state);
     }
 
     /* vm_backtrace.c */

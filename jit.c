@@ -18,6 +18,7 @@
 #include "vm_insnhelper.h"
 #include "vm_exec.h"
 
+#include "jit.h"
 #include "jit_opts.h"
 #include "jit_prelude.c"
 #include "jit_hashmap.c"
@@ -155,6 +156,106 @@ static jit_event_t *jit_init_event(jit_event_t *e, rb_jit_t *jit, rb_thread_t *t
 
 static rb_jit_t *current_jit = NULL;
 static VALUE rb_cMath;
+
+/* redefined_flag { */
+static short jit_vm_redefined_flag[JIT_BOP_EXT_LAST_];
+static st_table *jit_opt_method_table = 0;
+
+#define MATH_REDEFINED_OP_FLAG (1 << 9)
+static int
+jit_redefinition_check_flag(VALUE klass)
+{
+    if (klass == rb_cFixnum)
+	return FIXNUM_REDEFINED_OP_FLAG;
+    if (klass == rb_cFloat)
+	return FLOAT_REDEFINED_OP_FLAG;
+    if (klass == rb_cString)
+	return STRING_REDEFINED_OP_FLAG;
+    if (klass == rb_cArray)
+	return ARRAY_REDEFINED_OP_FLAG;
+    if (klass == rb_cHash)
+	return HASH_REDEFINED_OP_FLAG;
+    if (klass == rb_cBignum)
+	return BIGNUM_REDEFINED_OP_FLAG;
+    if (klass == rb_cSymbol)
+	return SYMBOL_REDEFINED_OP_FLAG;
+    if (klass == rb_cTime)
+	return TIME_REDEFINED_OP_FLAG;
+    if (klass == rb_cRegexp)
+	return REGEXP_REDEFINED_OP_FLAG;
+    if (klass == rb_cMath)
+	return MATH_REDEFINED_OP_FLAG;
+    return 0;
+}
+
+void rb_jit_check_redefinition_opt_method(const rb_method_entry_t *me, VALUE klass)
+{
+    if (!disable_jit) {
+	return;
+    }
+    st_data_t bop;
+    int flag = jit_redefinition_check_flag(klass);
+    if (st_lookup(jit_opt_method_table, (st_data_t)me, &bop)) {
+	assert(flag != 0);
+	jit_vm_redefined_flag[bop] |= flag;
+    }
+    if ((jit_vm_redefined_flag[bop] & GET_VM()->redefined_flag[bop]) == GET_VM()->redefined_flag[bop]) {
+	jit_vm_redefined_flag[bop] |= GET_VM()->redefined_flag[bop];
+    }
+}
+
+/* copied from vm.c */
+static void add_opt_method(VALUE klass, ID mid, VALUE bop)
+{
+    rb_method_entry_t *me = rb_method_entry_at(klass, mid);
+
+    if (me && me->def && me->def->type == VM_METHOD_TYPE_CFUNC) {
+	st_insert(jit_opt_method_table, (st_data_t)me, (st_data_t)bop);
+    }
+    else {
+	rb_bug("undefined optimized method: %s", rb_id2name(mid));
+    }
+}
+
+static void rb_jit_init_redefined_flag(void)
+{
+#define DEF(k, mid, bop)                              \
+    do {                                              \
+	jit_vm_redefined_flag[bop] = 0;               \
+	add_opt_method(rb_c##k, rb_intern(mid), bop); \
+    } while (0)
+    jit_opt_method_table = st_init_numtable();
+    DEF(Fixnum, "&", JIT_BOP_AND);
+    DEF(Fixnum, "|", JIT_BOP_OR);
+    DEF(Fixnum, "^", JIT_BOP_XOR);
+    DEF(Fixnum, ">>", JIT_BOP_RSHIFT);
+    DEF(Fixnum, "~", JIT_BOP_INV);
+    DEF(Fixnum, "**", JIT_BOP_POW);
+    DEF(Float, "**", JIT_BOP_POW);
+
+    DEF(Fixnum, "-@", JIT_BOP_NEG);
+    DEF(Float, "-@", JIT_BOP_NEG);
+    DEF(Fixnum, "to_f", JIT_BOP_TO_F);
+    DEF(Float, "to_f", JIT_BOP_TO_F);
+    DEF(String, "to_f", JIT_BOP_TO_F);
+
+    DEF(Float, "to_i", JIT_BOP_TO_I);
+    DEF(String, "to_i", JIT_BOP_TO_I);
+
+    DEF(Fixnum, "to_s", JIT_BOP_TO_S);
+    DEF(Float, "to_s", JIT_BOP_TO_S);
+    DEF(String, "to_s", JIT_BOP_TO_S);
+
+    DEF(Math, "sin", JIT_BOP_SIN);
+    DEF(Math, "cos", JIT_BOP_COS);
+    DEF(Math, "tan", JIT_BOP_TAN);
+    DEF(Math, "exp", JIT_BOP_EXP);
+    DEF(Math, "sqrt", JIT_BOP_SQRT);
+    DEF(Math, "log10", JIT_BOP_LOG10);
+    DEF(Math, "log2", JIT_BOP_LOG2);
+#undef DEF
+}
+/* } redefined_flag */
 
 /* memory pool { */
 #define SIZEOF_MEMORY_POOL (4096 - sizeof(void *))
@@ -302,7 +403,7 @@ static void tracebuffer_clear(trace_recorder_t *rec, int alloc_memory)
 /* } trace_recorder */
 
 /* rb_jit { */
-static void jit_global_default_params_setup()
+static void jit_global_default_params_setup(struct rb_vm_global_state *global_state_ptr)
 {
     char *disable_jit_ptr;
     disable_jit_ptr = getenv("RUJIT_DISABLE_JIT");
@@ -312,6 +413,12 @@ static void jit_global_default_params_setup()
 	    fprintf(stderr, "disable_jit=%d\n", disable_jit_i);
 	}
 	disable_jit = disable_jit_i;
+    }
+    {
+	int i;
+	for (i = 0; i < BOP_LAST_; i++) {
+	    jit_vm_redefined_flag[i] = global_state_ptr->_ruby_vm_redefined_flag[i];
+	}
     }
 }
 
@@ -356,6 +463,7 @@ static rb_jit_t *jit_init()
 
     jit->recorder = trace_recorder_new();
     hashmap_init(&jit->traces, 1);
+    rb_jit_init_redefined_flag();
     jit_default_params_setup(jit);
     return jit;
 }
@@ -370,12 +478,12 @@ static void jit_delete(rb_jit_t *jit)
     }
 }
 
-void Init_rawjit()
+void Init_rawjit(struct rb_vm_global_state *global_state_ptr)
 {
-    jit_global_default_params_setup();
+    jit_global_default_params_setup(global_state_ptr);
     if (!disable_jit) {
-	current_jit = jit_init();
 	rb_cMath = rb_singleton_class(rb_mMath);
+	current_jit = jit_init();
 	Init_jit(); // load jit_prelude
     }
 }
