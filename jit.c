@@ -47,13 +47,31 @@ struct memory_pool {
     unsigned size;
 };
 
-typedef struct const_pool {
+typedef struct jit_list {
     uintptr_t *list;
     unsigned size;
     unsigned capacity;
+} jit_list_t;
+
+typedef struct const_pool {
+    jit_list_t list;
 } const_pool_t;
 
-#define HOT_TRACE_THRESHOLD 4
+typedef struct lir_inst_t {
+    unsigned id;
+    unsigned short flag;
+    unsigned short opcode;
+    struct lir_inst_t *parent;
+    jit_list_t *user;
+} lir_inst_t, *lir_t;
+
+typedef struct lir_basicblock_t {
+    lir_inst_t base;
+    jit_list_t insts;
+    jit_list_t succs;
+    jit_list_t preds;
+} basicblock_t;
+
 typedef struct trace_side_exit_handler trace_side_exit_handler_t;
 struct jit_trace {
     void *code;
@@ -103,11 +121,12 @@ typedef struct jit_event_t {
 
 typedef struct trace_recorder_t {
     jit_event_t *current_event;
-    //basicblock_t *cur_bb;
-    //basicblock_t *entry_bb;
+    basicblock_t *cur_bb;
+    basicblock_t *entry_bb;
     struct lir_inst_t **insts;
     unsigned inst_size;
     unsigned flag;
+    unsigned last_inst_id;
     struct memory_pool mp;
 } trace_recorder_t;
 
@@ -311,57 +330,133 @@ static void *memory_pool_alloc(struct memory_pool *mp, size_t size)
 }
 /* } memory pool */
 
-/* const pool { */
-#define CONST_POOL_API static
+/* jit_list { */
 
-#define CONST_POOL_INIT_SIZE 1
-CONST_POOL_API const_pool_t *const_pool_init(const_pool_t *self)
+static void jit_list_init(jit_list_t *self)
 {
     self->list = NULL;
-    self->size = 0;
-    self->capacity = 0;
+    self->size = self->capacity = 0;
+}
+
+static uintptr_t jit_list_get(jit_list_t *self, int idx)
+{
+    assert(0 <= idx && idx < self->size);
+    return self->list[idx];
+}
+
+static void jit_list_set(jit_list_t *self, int idx, uintptr_t val)
+{
+    assert(0 <= idx && idx < self->size);
+    self->list[idx] = val;
+}
+
+static void jit_list_add(jit_list_t *self, uintptr_t val)
+{
+    if (self->size + 1 >= self->capacity) {
+	if (self->capacity == 0) {
+	    self->capacity = 1;
+	    self->list = (uintptr_t *)malloc(sizeof(uintptr_t) * self->capacity);
+	}
+	else {
+	    self->capacity *= 2;
+	    self->list = (uintptr_t *)realloc(self->list, sizeof(uintptr_t) * self->capacity);
+	}
+    }
+    self->list[self->size++] = val;
+}
+
+static void jit_list_delete(jit_list_t *self)
+{
+    if (self->capacity) {
+	free(self->list);
+    }
+}
+/* } jit_list */
+
+/* const pool { */
+
+#define CONST_POOL_INIT_SIZE 1
+static const_pool_t *const_pool_init(const_pool_t *self)
+{
+    jit_list_init(&self->list);
     return self;
 }
 
-CONST_POOL_API int const_pool_contain(const_pool_t *self, const void *ptr)
+static int const_pool_contain(const_pool_t *self, const void *ptr)
 {
     unsigned i;
-    for (i = 0; i < self->size; i++) {
-	if (self->list[i] == (uintptr_t)ptr) {
+    for (i = 0; i < self->list.size; i++) {
+	if (self->list.list[i] == (uintptr_t)ptr) {
 	    return 1;
 	}
     }
     return 0;
 }
 
-CONST_POOL_API void const_pool_add(const_pool_t *self, const void *ptr)
+static void const_pool_add(const_pool_t *self, const void *ptr)
 {
     if (const_pool_contain(self, ptr)) {
 	return;
     }
-    if (self->size + 1 >= self->capacity) {
-	if (self->capacity == 0) {
-	    self->capacity = CONST_POOL_INIT_SIZE;
-	    self->list = (uintptr_t *)malloc(sizeof(uintptr_t) * self->capacity);
-	}
-	else {
-	    unsigned newcapacity;
-	    self->capacity *= 2;
-	    newcapacity = sizeof(uintptr_t) * self->capacity;
-	    self->list = (uintptr_t *)realloc(self->list, newcapacity);
-	}
-    }
-    self->list[self->size++] = (uintptr_t)ptr;
+    jit_list_add(&self->list, (uintptr_t)ptr);
 }
 
-CONST_POOL_API void const_pool_delete(const_pool_t *self)
+static void const_pool_delete(const_pool_t *self)
 {
-    if (self->list) {
-	free(self->list);
-    }
-    self->size = self->capacity = 0;
+    jit_list_delete(&self->list);
 }
+
 /* } const pool */
+
+/* lir_inst {*/
+static inline uintptr_t lir_getid(lir_t ir)
+{
+    return ir->id;
+}
+
+static void *lir_inst_init(void *ptr, unsigned opcode)
+{
+    lir_inst_t *inst = (lir_inst_t *)ptr;
+    inst->id = 0;
+    inst->flag = 0;
+    inst->opcode = opcode;
+    inst->parent = NULL;
+    inst->user = NULL;
+    return inst;
+}
+
+static lir_inst_t *lir_inst_allocate(trace_recorder_t *recorder, lir_inst_t *src, unsigned inst_size)
+{
+    lir_inst_t *dst = memory_pool_alloc(&recorder->mp, inst_size);
+    memcpy(dst, src, inst_size);
+    dst->id = recorder->last_inst_id++;
+    return dst;
+}
+
+/* } lir_inst */
+
+/* basicblock { */
+static basicblock_t *basicblock_new(struct memory_pool *mp)
+{
+    basicblock_t *bb = (basicblock_t *)memory_pool_alloc(mp, sizeof(*bb));
+    jit_list_init(&bb->insts);
+    jit_list_init(&bb->succs);
+    jit_list_init(&bb->preds);
+    return bb;
+}
+
+static void basicblock_delete(basicblock_t *bb)
+{
+    jit_list_delete(&bb->insts);
+    jit_list_delete(&bb->succs);
+    jit_list_delete(&bb->preds);
+}
+
+static void basicblock_append(basicblock_t *bb, lir_inst_t *inst)
+{
+    jit_list_add(&bb->insts, (uintptr_t)inst);
+}
+/* } basicblock */
 
 /* trace_recorder { */
 static trace_recorder_t *trace_recorder_new()
@@ -398,8 +493,41 @@ static VALUE *trace_invoke(rb_jit_t *jit, jit_event_t *e, trace_t *trace)
 static void tracebuffer_clear(trace_recorder_t *rec, int alloc_memory)
 {
     rec->inst_size = 0;
+    rec->last_inst_id = 0;
     memory_pool_reset(&rec->mp, alloc_memory);
 }
+
+static int peephole(trace_recorder_t *recorder, lir_inst_t *inst)
+{
+    return 0;
+}
+
+static lir_inst_t *constant_fold_inst(trace_recorder_t *recorder, lir_inst_t *inst)
+{
+    return inst;
+}
+
+static void dump_lir_inst(lir_inst_t *inst);
+
+static lir_inst_t *trace_recorder_add_inst(trace_recorder_t *recorder, lir_inst_t *inst, unsigned inst_size)
+{
+    lir_inst_t *newinst = NULL;
+    if (peephole(recorder, inst)) {
+	return NULL;
+    }
+    if ((newinst = constant_fold_inst(recorder, inst)) == inst) {
+	// when `inst` is able to constant folding, folded `inst`
+	// is already inserted by `constant_fold_inst`
+	newinst = lir_inst_allocate(recorder, inst, inst_size);
+	basicblock_append(recorder->cur_bb, inst);
+    }
+    if (DUMP_LIR) {
+	dump_lir_inst(newinst);
+    }
+    //update_userinfo(Rec, buf);
+    return newinst;
+}
+
 /* } trace_recorder */
 
 /* rb_jit { */
@@ -701,4 +829,69 @@ VALUE *rb_jit_trace(rb_thread_t *th, rb_control_frame_t *reg_cfp, VALUE *reg_pc)
     jit_event_t *e = jit_init_event(&ebuf, current_jit, th, reg_cfp, reg_pc);
     return trace_selection(current_jit, e);
 }
+
+#define FMT(T) FMT_##T
+#define FMT_int "%d"
+#define FMT_long "%ld"
+#define FMT_lir_t "%04ld"
+#define FMT_LirPtr "%04ld"
+#define FMT_ID "%04ld"
+#define FMT_VALUE "0x%lx"
+#define FMT_VALUEPtr "%p"
+#define FMT_voidPtr "%p"
+#define FMT_CALL_INFO "%p"
+#define FMT_IC "%p"
+#define FMT_ISEQ "%p"
+#define FMT_BasicBlockPtr "bb:%d"
+#define FMT_rb_event_flag_t "%lu"
+
+#define DATA(T, V) DATA_##T(V)
+#define DATA_int(V) (V)
+#define DATA_long(V) (V)
+#define DATA_lir_t(V) (lir_getid(V))
+#define DATA_LirPtr(V) (lir_getid(*(V)))
+#define DATA_VALUE(V) (V)
+#define DATA_VALUEPtr(V) (V)
+#define DATA_voidPtr(V) (V)
+#define DATA_CALL_INFO(V) (V)
+#define DATA_IC(V) (V)
+#define DATA_ISEQ(V) (V)
+#define DATA_BasicBlockPtr(V) ((V)->base.id)
+#define DATA_rb_event_flag_t(V) (V)
+
+#define LIR_NEWINST(T) ((T *)lir_inst_init(alloca(sizeof(T)), OPCODE_##T))
+#define LIR_NEWINST_N(T, SIZE) \
+    ((T *)lir_inst_init(alloca(sizeof(T) + sizeof(lir_t) * (SIZE)), OPCODE_##T))
+
+#define ADD_INST(REC, INST) ADD_INST_N(REC, INST, 0)
+
+#define ADD_INST_N(REC, INST, SIZE) \
+    trace_recorder_add_inst(REC, &(INST)->base, sizeof(*INST) + sizeof(lir_t) * (SIZE))
+
+typedef lir_t *LirPtr;
+typedef VALUE *VALUEPtr;
+typedef void *voidPtr;
+typedef basicblock_t *BasicBlockPtr;
+typedef void *lir_folder_t;
+
+#include "lir_template.h"
+#include "lir.c"
+
+static void dump_lir_inst(lir_inst_t *inst)
+{
+    if (DUMP_LIR > 0) {
+	switch (inst->opcode) {
+#define DUMP_IR(OPNAME)      \
+    case OPCODE_I##OPNAME: { \
+	Dump_##OPNAME(inst); \
+	break;               \
+    }
+	    LIR_EACH(DUMP_IR);
+	    default:
+		assert(0 && "unreachable");
+#undef DUMP_IR
+	}
+    }
+}
+
 //#include "yarv2lir.c"

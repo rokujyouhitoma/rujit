@@ -28,9 +28,10 @@
 #define LIR_TRACE_INIT_SIZE 16 /* initial size of trace */
 #define LIR_RESERVED_REGSTACK_SIZE 8
 
-#define JIT_LOG_SIDE_EXIT  0 /* 0:disable, 1: emit log if side exit occured */
+#define JIT_LOG_SIDE_EXIT 0 /* 0:disable, 1: emit log if side exit occured */
 
 /* Initial buffer size of lir memory allocator */
 #define LIR_COMPILE_DATA_BUFF_SIZE (512)
 
+#define HOT_TRACE_THRESHOLD 4
 #endif /* end of include guard */

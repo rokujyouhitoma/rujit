@@ -76,7 +76,7 @@ def define_struct(ir)
 end
 
 def emit_ir(ir)
-  print "static lir_t Emit_#{ir.name}(TraceRecorder *Rec"
+  print "static lir_t Emit_#{ir.name}(trace_recorder_t *Rec"
   ir.arg.each{|e|
     type = e.type
     name = e.name
@@ -157,7 +157,7 @@ end
 
 def emit_specialinst(ir)
   if !ir.variadic and ir.trans
-    print "static lir_t EmitSpecialInst_#{ir.name}(TraceRecorder *Rec"
+    print "static lir_t EmitSpecialInst_#{ir.name}(trace_recorder_t *Rec"
     puts ", CALL_INFO ci, lir_t *regs)"
     puts "{\n"
     print "  return Emit_#{ir.name}(Rec"
