@@ -249,7 +249,7 @@ class Unredefined < Rule
   end
 
   def to_s
-    "OP_UNREDEFINED_P(#{symbolize @val}, #{redefinition_flag @type})"
+    "JIT_OP_UNREDEFINED_P(#{symbolize @val}, #{redefinition_flag @type})"
   end
   def emit_guard
     s  = "Emit_GuardMethodRedefine(Rec, pc, "

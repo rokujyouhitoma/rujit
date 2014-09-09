@@ -181,6 +181,8 @@ static VALUE rb_cMath;
 static short jit_vm_redefined_flag[JIT_BOP_EXT_LAST_];
 static st_table *jit_opt_method_table = 0;
 
+#define JIT_OP_UNREDEFINED_P(op, klass) (LIKELY((jit_vm_redefined_flag[(op)] & (klass)) == 0))
+
 #define MATH_REDEFINED_OP_FLAG (1 << 9)
 static int
 jit_redefinition_check_flag(VALUE klass)
@@ -477,6 +479,11 @@ static void basicblock_delete(basicblock_t *bb)
     jit_list_delete(&bb->preds);
 }
 
+static unsigned basicblock_size(basicblock_t *bb)
+{
+    return bb->insts.size;
+}
+
 static void basicblock_append(basicblock_t *bb, lir_inst_t *inst)
 {
     jit_list_add(&bb->insts, (uintptr_t)inst);
@@ -765,9 +772,9 @@ static int is_tracable_call_inst(jit_event_t *e)
 	return 1;
     }
 
-    //if (is_tracable_special_inst(e->opcode, ci)) {
-    //    return 1;
-    //}
+    if (is_tracable_special_inst(e->opcode, ci)) {
+	return 1;
+    }
     return 0;
 }
 
@@ -787,7 +794,7 @@ static int is_end_of_trace(trace_recorder_t *recorder, jit_event_t *e)
 	// TODO emit exit
 	return 1;
     }
-    if (is_tracable_call_inst(e)) {
+    if (!is_tracable_call_inst(e)) {
 	e->reason = TRACE_ERROR_NATIVE_METHOD;
 	// TODO emit exit
 	return 1;
@@ -806,8 +813,8 @@ static void trace_reset(trace_t *trace, int alloc_memory)
 
 static void record_inst(trace_recorder_t *ecorder, jit_event_t *e)
 {
+    dump_inst(e);
 }
-//#include "jit_record.c"
 
 static VALUE *trace_selection(rb_jit_t *jit, jit_event_t *e)
 {
@@ -968,4 +975,4 @@ static void dump_trace(trace_recorder_t *rec)
     }
 }
 
-#include "yarv2lir.c"
+#include "jit_record.c"
