@@ -894,4 +894,52 @@ static void dump_lir_inst(lir_inst_t *inst)
     }
 }
 
+static void dump_lir_block(BasicBlock *block)
+{
+    if (DUMP_LIR > 0) {
+	unsigned i = 0;
+	fprintf(stderr, "BB%ld (pc=%p)\n", block_id(block), block->start_pc);
+	for (i = 0; i < block->list.size; i++) {
+	    lir_inst_t *Inst = block->list.list[i];
+	    dump_lir_inst(Inst);
+	}
+    }
+}
+
+static void dump_side_exit(TraceRecorder *Rec)
+{
+    if (DUMP_LIR > 0) {
+	// FIXME implement dump_side_exit
+	//int i;
+	//hashmap_iterator_t itr = { 0, 0 };
+	//while (hashmap_next(&TraceRecorderGetTrace(Rec)->StackMap, &itr)) {
+	//    VALUE *pc = (VALUE *)itr.entry->key;
+	//    StackMap *stack = GetStackMap(Rec, pc);
+	//    fprintf(stderr, "side exit(%d): pc=%p: %s ", stack->size, pc,
+	//	    TraceStatusToStr(stack->flag));
+	//    for (i = 0; i < stack->size; i++) {
+	//	lir_inst_t *inst = stack->regs[i];
+	//	fprintf(stderr, "  [%d] = %04ld;", i, lir_getid(inst));
+	//    }
+	//    fprintf(stderr, "\n");
+	//}
+    }
+}
+
+static void dump_trace(trace_recorder_t *rec)
+{
+    if (DUMP_LIR > 0) {
+	//FIXME implement dump_trace
+	//basicblock_t *entry = rec->entry_bb;
+	//basicblock_t *block = entry;
+	//fprintf(stderr, "---------------\n");
+	//while (block != NULL) {
+	//    dump_lir_block(block);
+	//    block = (BasicBlock *)block->base.next;
+	//}
+	//fprintf(stderr, "---------------\n");
+	//dump_side_exit(Rec);
+	//fprintf(stderr, "---------------\n");
+    }
+}
 //#include "yarv2lir.c"
