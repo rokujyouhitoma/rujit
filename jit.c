@@ -350,6 +350,17 @@ static void jit_list_set(jit_list_t *self, int idx, uintptr_t val)
     self->list[idx] = val;
 }
 
+static int jit_list_indexof(jit_list_t *self, uintptr_t val)
+{
+    unsigned i;
+    for (i = 0; i < self->size; i++) {
+	if (self->list[i] == (uintptr_t)ptr) {
+	    return i;
+	}
+    }
+    return -1;
+}
+
 static void jit_list_add(jit_list_t *self, uintptr_t val)
 {
     if (self->size + 1 >= self->capacity) {
@@ -363,6 +374,18 @@ static void jit_list_add(jit_list_t *self, uintptr_t val)
 	}
     }
     self->list[self->size++] = val;
+}
+
+static void jit_list_remove(jit_list_t *self, uintptr_t val)
+{
+    int i;
+    if ((i = jit_list_indexof(self, val)) != -1) {
+	if (i != list->size) {
+	    list->size -= 1;
+	    memmove(list->list + i, list->list + i + 1,
+	            sizeof(uintptr_t) * (list->size - i));
+	}
+    }
 }
 
 static void jit_list_delete(jit_list_t *self)
@@ -384,18 +407,19 @@ static const_pool_t *const_pool_init(const_pool_t *self)
 
 static int const_pool_contain(const_pool_t *self, const void *ptr)
 {
+    return jit_list_indexof(&self->list, (uintptr_t)ptr);
     unsigned i;
     for (i = 0; i < self->list.size; i++) {
 	if (self->list.list[i] == (uintptr_t)ptr) {
-	    return 1;
+	    return i;
 	}
     }
-    return 0;
+    return -1;
 }
 
 static void const_pool_add(const_pool_t *self, const void *ptr)
 {
-    if (const_pool_contain(self, ptr)) {
+    if (const_pool_contain(self, ptr) != -1) {
 	return;
     }
     jit_list_add(&self->list, (uintptr_t)ptr);
