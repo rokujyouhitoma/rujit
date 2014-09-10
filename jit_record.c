@@ -7,8 +7,8 @@
   Copyright (C) 2014 Masahiro Ide
 
  **********************************************************************/
-//#define CREATE_BLOCK(REC, PC) basicblock_new(&(REC)->mpool, PC)
-//
+#define CREATE_BLOCK(REC, PC) trace_recorder_create_block(REC, PC)
+
 //#undef GET_GLOBAL_CONSTANT_STATE
 //#define GET_GLOBAL_CONSTANT_STATE() (*ruby_vm_global_constant_state_ptr)
 //
@@ -19,13 +19,15 @@
 //        return;                                                             \
 //    } while (0)
 //
-//#define EmitIR(OP, ...) Emit_##OP(rec, ##__VA_ARGS__)
-//
-//#define _POP() regstack_pop(&(rec)->regstack)
-//#define _PUSH(REG) regstack_push(&(rec)->regstack, REG)
-//#define _TOPN(N) regstack_top(&(rec)->regstack, (int)(N))
-//#define _SET(N, REG) regstack_set(&(rec)->regstack, (int)(N), REG)
-//
+
+#define EmitIR(OP, ...) Emit_##OP(rec, ##__VA_ARGS__)
+#define _POP() regstack_pop(rec, &(rec)->regstack)
+#define _PUSH(REG) regstack_push(rec, &(rec)->regstack, REG)
+#define _TOPN(N) regstack_top(&(rec)->regstack, (int)(N))
+#define _SET(N, REG) regstack_set(&(rec)->regstack, (int)(N), REG)
+#undef REG_CFP
+#define REG_CFP ((e)->cfp)
+
 //static lir_t EmitLoadConst(trace_recorder_t *rec, VALUE val)
 //{
 //    lir_t Rval = NULL;
@@ -60,110 +62,95 @@
 //    return Rval;
 //}
 //
-//static lir_t EmitSpecialInst_FixnumPowOverflow(trace_recorder_t *rec, CALL_INFO ci,
-//                                        lir_t *regs)
-//{
-//    return Emit_InvokeNative(rec, ci->me->def->body.cfunc.func, 2, regs);
-//}
-//
-//static lir_t EmitSpecialInst_FloatPow(trace_recorder_t *rec, CALL_INFO ci,
-//                                        lir_t *regs)
-//{
-//    return Emit_InvokeNative(rec, ci->me->def->body.cfunc.func, 2, regs);
-//}
-//
-//static lir_t EmitSpecialInst_FixnumSucc(trace_recorder_t *rec, CALL_INFO ci,
-//                                        lir_t *regs)
-//{
-//    lir_t Robj = EmitIR(LoadConstFixnum, INT2FIX(1));
-//    return EmitIR(FixnumAddOverflow, regs[0], Robj);
-//}
-//
-//static lir_t EmitSpecialInst_TimeSucc(trace_recorder_t *rec, CALL_INFO ci,
-//                                      lir_t *regs)
-//{
-//    return Emit_InvokeNative(rec, rb_time_succ, 1, regs);
-//}
-//
-//static lir_t EmitSpecialInst_StringFreeze(trace_recorder_t *rec, CALL_INFO ci,
-//                                          lir_t *regs)
-//{
-//    return _POP();
-//}
-//
-////static lir_t EmitSpecialInst_FixnumToFixnum(trace_recorder_t * rec, CALL_INFO ci,
-////                                            lir_t* regs)
-////{
-////    return regs[0];
-////}
-//
-//static lir_t EmitSpecialInst_FloatToFloat(trace_recorder_t * rec, CALL_INFO ci,
-//                                          lir_t* regs)
+static lir_t EmitSpecialInst_FixnumPowOverflow(trace_recorder_t *rec, CALL_INFO ci, lir_t *regs)
+{
+    return Emit_InvokeNative(rec, ci->me->def->body.cfunc.func, 2, regs);
+}
+
+static lir_t EmitSpecialInst_FloatPow(trace_recorder_t *rec, CALL_INFO ci, lir_t *regs)
+{
+    return Emit_InvokeNative(rec, ci->me->def->body.cfunc.func, 2, regs);
+}
+
+static lir_t EmitSpecialInst_FixnumSucc(trace_recorder_t *rec, CALL_INFO ci, lir_t *regs)
+{
+    lir_t Robj = EmitIR(LoadConstFixnum, INT2FIX(1));
+    return EmitIR(FixnumAddOverflow, regs[0], Robj);
+}
+
+static lir_t EmitSpecialInst_TimeSucc(trace_recorder_t *rec, CALL_INFO ci, lir_t *regs)
+{
+    return Emit_InvokeNative(rec, rb_time_succ, 1, regs);
+}
+
+static lir_t EmitSpecialInst_StringFreeze(trace_recorder_t *rec, CALL_INFO ci, lir_t *regs)
+{
+    return _POP();
+}
+
+//static lir_t EmitSpecialInst_FixnumToFixnum(trace_recorder_t * rec, CALL_INFO ci, lir_t* regs)
 //{
 //    return regs[0];
 //}
-//
-//static lir_t EmitSpecialInst_StringToString(trace_recorder_t * rec, CALL_INFO ci,
-//                                            lir_t* regs)
-//{
-//    return regs[0];
-//}
-//
-//extern VALUE rb_obj_not(VALUE obj);
-//
-//static lir_t EmitSpecialInst_ObjectNot(trace_recorder_t * rec, CALL_INFO ci,
-//                                       lir_t* regs)
+
+static lir_t EmitSpecialInst_FloatToFloat(trace_recorder_t *rec, CALL_INFO ci, lir_t *regs)
+{
+    return regs[0];
+}
+
+static lir_t EmitSpecialInst_StringToString(trace_recorder_t *rec, CALL_INFO ci, lir_t *regs)
+{
+    return regs[0];
+}
+
+static lir_t EmitSpecialInst_ObjectNot(trace_recorder_t *rec, CALL_INFO ci, lir_t *regs)
+{
+    extern VALUE rb_obj_not(VALUE obj);
+    ci = trace_recorder_clone_cache(rec, ci);
+    EmitIR(GuardMethodCache, rec->current_event->pc, regs[0], ci);
+    if (check_cfunc(ci->me, rb_obj_not)) {
+	return EmitIR(ObjectNot, regs[0]);
+    }
+    else {
+	return EmitIR(InvokeMethod, ci, ci->argc + 1, regs);
+    }
+}
+
+//static lir_t EmitSpecialInst_ObjectNe(trace_recorder_t *rec, CALL_INFO ci, lir_t *regs)
 //{
 //    ci = trace_recorder_clone_cache(rec, ci);
 //    EmitIR(GuardMethodCache, rec->current_event->pc, regs[0], ci);
-//    if (check_cfunc(ci->me, rb_obj_not)) {
-//        return EmitIR(ObjectNot, regs[0]);
-//    } else {
-//        return EmitIR(InvokeMethod, ci, ci->argc + 1, regs);
-//    }
+//    return EmitIR(InvokeMethod, ci, ci->argc + 1, regs);
 //}
 //
-////static lir_t EmitSpecialInst_ObjectNe(trace_recorder_t *rec, CALL_INFO ci,
-////                                        lir_t *regs)
-////{
-////    ci = trace_recorder_clone_cache(rec, ci);
-////    EmitIR(GuardMethodCache, rec->current_event->pc, regs[0], ci);
-////    return EmitIR(InvokeMethod, ci, ci->argc + 1, regs);
-////}
-////
-////static lir_t EmitSpecialInst_ObjectEq(trace_recorder_t *rec, CALL_INFO ci,
-////                                        lir_t *regs)
-////{
-////    ci = trace_recorder_clone_cache(rec, ci);
-////    EmitIR(GuardMethodCache, rec->current_event->pc, regs[0], ci);
-////    return EmitIR(InvokeMethod, ci, ci->argc + 1, regs);
-////}
-//
-//static lir_t EmitSpecialInst_GetPropertyName(trace_recorder_t *rec, CALL_INFO ci,
-//                                             lir_t *regs)
+//static lir_t EmitSpecialInst_ObjectEq(trace_recorder_t *rec, CALL_INFO ci, lir_t *regs)
 //{
-//    VALUE obj = ci->recv;
-//    VALUE *reg_pc = rec->current_event->pc;
-//    int cacheable = vm_load_cache(obj, ci->me->def->body.attr.id, 0, ci, 1);
-//    assert(ci->aux.index > 0 && cacheable);
-//    EmitIR(GuardProperty, reg_pc, regs[0], 1 /*is_attr*/, (void *)ci);
-//    return Emit_GetPropertyName(rec, regs[0], ci->aux.index - 1);
+//    ci = trace_recorder_clone_cache(rec, ci);
+//    EmitIR(GuardMethodCache, rec->current_event->pc, regs[0], ci);
+//    return EmitIR(InvokeMethod, ci, ci->argc + 1, regs);
 //}
-//
-//static lir_t EmitSpecialInst_SetPropertyName(trace_recorder_t *rec, CALL_INFO ci,
-//                                             lir_t *regs)
-//{
-//    VALUE obj = ci->recv;
-//    VALUE *reg_pc = rec->current_event->pc;
-//    int cacheable = vm_load_cache(obj, ci->me->def->body.attr.id, 0, ci, 1);
-//    assert(ci->aux.index > 0 && cacheable);
-//    EmitIR(GuardProperty, reg_pc, regs[0], 1 /*is_attr*/, (void *)ci);
-//    return Emit_SetPropertyName(rec, regs[0], ci->aux.index - 1, regs[1]);
-//}
-//
-static lir_t EmitSpecialInst(trace_recorder_t *rec, VALUE *pc, CALL_INFO ci,
-                             enum ruby_vminsn_type opcode, VALUE *params,
-                             lir_t *regs);
+
+static lir_t EmitSpecialInst_GetPropertyName(trace_recorder_t *rec, CALL_INFO ci, lir_t *regs)
+{
+    VALUE obj = ci->recv;
+    VALUE *reg_pc = rec->current_event->pc;
+    int cacheable = vm_load_cache(obj, ci->me->def->body.attr.id, 0, ci, 1);
+    assert(ci->aux.index > 0 && cacheable);
+    EmitIR(GuardProperty, reg_pc, regs[0], 1 /*is_attr*/, (void *)ci);
+    return Emit_GetPropertyName(rec, regs[0], ci->aux.index - 1);
+}
+
+static lir_t EmitSpecialInst_SetPropertyName(trace_recorder_t *rec, CALL_INFO ci, lir_t *regs)
+{
+    VALUE obj = ci->recv;
+    VALUE *reg_pc = rec->current_event->pc;
+    int cacheable = vm_load_cache(obj, ci->me->def->body.attr.id, 0, ci, 1);
+    assert(ci->aux.index > 0 && cacheable);
+    EmitIR(GuardProperty, reg_pc, regs[0], 1 /*is_attr*/, (void *)ci);
+    return Emit_SetPropertyName(rec, regs[0], ci->aux.index - 1, regs[1]);
+}
+
+static lir_t EmitSpecialInst(trace_recorder_t *rec, VALUE *pc, CALL_INFO ci, int opcode, VALUE *params, lir_t *regs);
 #include "yarv2lir.c"
 //
 //static void EmitSpecialInst0(trace_recorder_t *rec, VALUE *pc, CALL_INFO ci,
@@ -235,21 +222,22 @@ static lir_t EmitSpecialInst(trace_recorder_t *rec, VALUE *pc, CALL_INFO ci,
 //    }
 //    _PUSH(EmitIR(AllocObject, regs[0], argc, regs + 1));
 //}
-//
-//static void EmitJump(trace_recorder_t *rec, VALUE *pc, int link)
-//{
-//    basicblock_t *bb = NULL;
-//    if (link == 0) {
-//        bb = CREATE_BLOCK(rec, pc);
-//    } else {
-//        if ((bb = FindBasicBlockByPC(rec, pc)) == NULL) {
-//            bb = CREATE_BLOCK(rec, pc);
-//        }
-//    }
-//    EmitIR(Jump, bb);
-//    rec->cur_bb = bb;
-//}
-//
+
+static void EmitJump(trace_recorder_t *rec, VALUE *pc, int link)
+{
+    basicblock_t *bb = NULL;
+    if (link == 0) {
+	bb = CREATE_BLOCK(rec, pc);
+    }
+    else {
+	if ((bb = trace_recorder_get_block(rec, pc)) == NULL) {
+	    bb = CREATE_BLOCK(rec, pc);
+	}
+    }
+    EmitIR(Jump, bb);
+    rec->cur_bb = bb;
+}
+
 //static void EmitMethodCall(trace_recorder_t *rec, rb_control_frame_t *reg_cfp,
 //                           VALUE *reg_pc, CALL_INFO ci, rb_block_t *block,
 //                           lir_t Rblock, int opcode)
@@ -598,14 +586,14 @@ static void record_newrange(trace_recorder_t *rec, jit_event_t *e)
 
 static void record_pop(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    _POP();
+    _POP();
 }
 
 static void record_dup(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    lir_t Rval = _POP();
-    //    _PUSH(Rval);
-    //    _PUSH(Rval);
+    lir_t Rval = _POP();
+    _PUSH(Rval);
+    _PUSH(Rval);
 }
 
 static void record_dupn(trace_recorder_t *rec, jit_event_t *e)
@@ -836,28 +824,30 @@ static void record_jump(trace_recorder_t *rec, jit_event_t *e)
 
 static void record_branchif(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    OFFSET dst = (OFFSET)GET_OPERAND(1);
-    //    lir_t Rval = _POP();
-    //    VALUE val = TOPN(0);
-    //    VALUE *NextPC = reg_pc + insn_len(BIN(branchif));
-    //    VALUE *JumpPC = NextPC + dst;
-    //    trace_mode_t prev_mode = RJitGetMode(rec->jit);
-    //
-    //    if (JumpPC == TracerecorderGetTrace(rec)->LastPC) {
-    //        RJitSetMode(rec->jit, prev_mode | TRACE_MODE_EMIT_BACKWARD_BRANCH);
-    //    }
-    //    if (RTEST(val)) {
-    //        TakeStackSnapshot(rec, NextPC);
-    //        EmitIR(GuardTypeNil, NextPC, Rval);
-    //        EmitJump(rec, JumpPC, 1);
-    //    } else {
-    //        TakeStackSnapshot(rec, JumpPC);
-    //        EmitIR(GuardTypeNil, JumpPC, Rval);
-    //        EmitJump(rec, NextPC, 1);
-    //    }
-    //    if (JumpPC == TracerecorderGetTrace(rec)->LastPC) {
-    //        RJitSetMode(rec->jit, prev_mode);
-    //    }
+    OFFSET dst = (OFFSET)GET_OPERAND(1);
+    lir_t Rval = _POP();
+    VALUE val = TOPN(0);
+    VALUE *next_pc = e->pc + insn_len(BIN(branchif));
+    VALUE *jump_pc = next_pc + dst;
+
+    if (jump_pc == rec->trace->last_pc) {
+	//RJitSetMode(rec->jit, prev_mode | TRACE_MODE_EMIT_BACKWARD_BRANCH);
+	asm volatile("int3");
+    }
+    if (RTEST(val)) {
+	trace_recorder_take_snapshot(rec, next_pc);
+	EmitIR(GuardTypeNil, next_pc, Rval);
+	EmitJump(rec, jump_pc, 1);
+    }
+    else {
+	trace_recorder_take_snapshot(rec, jump_pc);
+	EmitIR(GuardTypeNil, jump_pc, Rval);
+	EmitJump(rec, next_pc, 1);
+    }
+    if (jump_pc == rec->trace->last_pc) {
+	//RJitSetMode(rec->jit, prev_mode);
+	asm volatile("int3");
+    }
 }
 
 static void record_branchunless(trace_recorder_t *rec, jit_event_t *e)
@@ -865,18 +855,18 @@ static void record_branchunless(trace_recorder_t *rec, jit_event_t *e)
     //    OFFSET dst = (OFFSET)GET_OPERAND(1);
     //    lir_t Rval = _POP();
     //    VALUE val = TOPN(0);
-    //    VALUE *NextPC = reg_pc + insn_len(BIN(branchunless));
-    //    VALUE *JumpPC = NextPC + dst;
+    //    VALUE *next_pc = reg_pc + insn_len(BIN(branchunless));
+    //    VALUE *jump_pc = next_pc + dst;
     //    VALUE *TargetPC = NULL;
     //
     //    if (!RTEST(val)) {
-    //        TakeStackSnapshot(rec, NextPC);
-    //        EmitIR(GuardTypeNonNil, NextPC, Rval);
-    //        TargetPC = JumpPC;
+    //        TakeStackSnapshot(rec, next_pc);
+    //        EmitIR(GuardTypeNonNil, next_pc, Rval);
+    //        TargetPC = jump_pc;
     //    } else {
-    //        TakeStackSnapshot(rec, JumpPC);
-    //        EmitIR(GuardTypeNil, JumpPC, Rval);
-    //        TargetPC = NextPC;
+    //        TakeStackSnapshot(rec, jump_pc);
+    //        EmitIR(GuardTypeNil, jump_pc, Rval);
+    //        TargetPC = next_pc;
     //    }
     //
     //    EmitJump(rec, TargetPC, 1);
@@ -1218,7 +1208,7 @@ static void record_putobject_OP_INT2FIX_O_1_C_(trace_recorder_t *rec, jit_event_
 static void record_insn(trace_recorder_t *rec, jit_event_t *e)
 {
     int opcode = e->opcode;
-
+    dump_inst(e);
 #define CASE_RECORD(op)      \
     case BIN(op):            \
 	record_##op(rec, e); \

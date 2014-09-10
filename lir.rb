@@ -14,8 +14,8 @@ class IRArgument
 end
 
 class OP
-  attr_accessor :name, :def, :use, :arg, :variadic, :trans, :opcode, :side_effect
-  def initialize(name, has_def, has_use, trans, side_effect, arg, opcode)
+  attr_accessor :name, :def, :use, :arg, :variadic, :trans, :opcode, :side_effect, :terminator
+  def initialize(name, has_def, has_use, trans, side_effect, terminator, arg, opcode)
     @name = name
     @def = has_def == ":def"
     @use = has_use == ":use"
@@ -24,6 +24,7 @@ class OP
     @variadic = false
     @opcode = opcode
     @side_effect = side_effect
+    @termnator = terminator
     parse_arg(arg)
   end
 
@@ -49,8 +50,8 @@ open(ARGV[0]) { |file|
 
   while l = file.gets
     if /^([a-zA-Z0-9_]+)/ =~ l
-      /^([a-zA-Z0-9_]+) *(:def)? *(:use)? *(:trans)? *(:effect)? *\((.*)\)$/ =~ l
-      ir = OP.new($1, $2, $3, $4, $5, $6, i)
+      /^([a-zA-Z0-9_]+) *(:def)? *(:use)? *(:trans)? *(:effect)? *(:terminator)? *\((.*)\)$/ =~ l
+      ir = OP.new($1, $2, $3, $4, $5, $6, $7, i)
       irs.push(ir)
       i += 1
     end
@@ -62,6 +63,8 @@ def define_struct(ir)
   puts "#define LIR_USE_#{ir.name} #{ir.def ? 1 : 0}"
   puts "#define LIR_DEF_#{ir.name} #{ir.use ? 1 : 0}"
   puts "#define LIR_SIDE_EFFECT_#{ir.name} #{ir.side_effect ? 1 : 0}"
+  puts "#define LIR_IS_TERMINATOR_#{ir.name} #{ir.terminator ? 1 : 0}"
+  puts "#define LIR_IS_GUARD_INST_#{ir.name} #{ir.name.start_with?("Guard") ? 1 : 0}"
   puts "typedef struct I#{ir.name} {\n"
   puts "  lir_inst_t base;"
   ir.arg.each{|e|

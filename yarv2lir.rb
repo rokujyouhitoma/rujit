@@ -361,7 +361,7 @@ def emit_main
   }
 
   puts "static lir_t EmitSpecialInst(trace_recorder_t *Rec, VALUE *pc, CALL_INFO ci,"
-  puts "enum ruby_vminsn_type opcode, VALUE *params,"
+  puts "int opcode, VALUE *params,"
   puts "lir_t *regs)"
   puts "{"
 

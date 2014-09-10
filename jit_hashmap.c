@@ -112,17 +112,17 @@ static hashmap_status_t hashmap_set_no_resize(hashmap_t *m,
 {
     unsigned i, idx = rec->hash & m->record_size_mask;
     for (i = 0; i < DELTA; ++i) {
-        hashmap_record_t *r = m->records + idx;
-        if (r->hash == 0) {
-            hashmap_record_copy(r, rec);
-            ++m->used_size;
-            return HASHMAP_ADDED;
-        }
-        if (r->hash == rec->hash && r->key == rec->key) {
-            hashmap_record_copy(r, rec);
-            return HASHMAP_UPDATE;
-        }
-        idx = (idx + 1) & m->record_size_mask;
+	hashmap_record_t *r = m->records + idx;
+	if (r->hash == 0) {
+	    hashmap_record_copy(r, rec);
+	    ++m->used_size;
+	    return HASHMAP_ADDED;
+	}
+	if (r->hash == rec->hash && r->key == rec->key) {
+	    hashmap_record_copy(r, rec);
+	    return HASHMAP_UPDATE;
+	}
+	idx = (idx + 1) & m->record_size_mask;
     }
     return HASHMAP_FAILED;
 }
@@ -136,10 +136,10 @@ static void hashmap_record_resize(hashmap_t *m, unsigned newsize)
     newsize *= 2;
     hashmap_record_reset(m, newsize);
     for (i = 0; i < oldsize; ++i) {
-        hashmap_record_t *r = head + i;
-        if (r->hash && hashmap_set_no_resize(m, r) == HASHMAP_FAILED) {
-            continue;
-        }
+	hashmap_record_t *r = head + i;
+	if (r->hash && hashmap_set_no_resize(m, r) == HASHMAP_FAILED) {
+	    continue;
+	}
     }
     free(head);
 }
@@ -147,9 +147,9 @@ static void hashmap_record_resize(hashmap_t *m, unsigned newsize)
 static void hashmap_set_(hashmap_t *m, hashmap_record_t *rec)
 {
     do {
-        if ((hashmap_set_no_resize(m, rec)) != HASHMAP_FAILED)
-            return;
-        hashmap_record_resize(m, hashmap_capacity(m) * 2);
+	if ((hashmap_set_no_resize(m, rec)) != HASHMAP_FAILED)
+	    return;
+	hashmap_record_resize(m, hashmap_capacity(m) * 2);
     } while (1);
 }
 
@@ -158,11 +158,11 @@ static hashmap_data_t hashmap_get_(hashmap_t *m, unsigned hash,
 {
     unsigned i, idx = hash & m->record_size_mask;
     for (i = 0; i < DELTA; ++i) {
-        hashmap_record_t *r = m->records + idx;
-        if (r->hash == hash && r->key == key) {
-            return r->val;
-        }
-        idx = (idx + 1) & m->record_size_mask;
+	hashmap_record_t *r = m->records + idx;
+	if (r->hash == hash && r->key == key) {
+	    return r->val;
+	}
+	idx = (idx + 1) & m->record_size_mask;
     }
     return 0;
 }
@@ -170,7 +170,7 @@ static hashmap_data_t hashmap_get_(hashmap_t *m, unsigned hash,
 static void hashmap_init(hashmap_t *m, unsigned init)
 {
     if (init < HASHMAP_INITSIZE)
-        init = HASHMAP_INITSIZE;
+	init = HASHMAP_INITSIZE;
     hashmap_record_reset(m, 1U << LOG2(init));
 }
 
@@ -178,14 +178,16 @@ static void hashmap_dispose(hashmap_t *m, hashmap_entry_destructor_t Destructor)
 {
     unsigned i, size = hashmap_capacity(m);
     if (Destructor) {
-        for (i = 0; i < size; ++i) {
-            hashmap_record_t *r = hashmap_at(m, i);
-            if (r->hash) {
-                Destructor(r->val);
-            }
-        }
+	for (i = 0; i < size; ++i) {
+	    hashmap_record_t *r = hashmap_at(m, i);
+	    if (r->hash) {
+		Destructor(r->val);
+	    }
+	}
     }
     free(m->records);
+    m->used_size = m->record_size_mask = 0;
+    m->records = NULL;
 }
 
 static hashmap_data_t hashmap_get(hashmap_t *m, hashmap_data_t key)
@@ -207,12 +209,12 @@ static int hashmap_next(hashmap_t *m, hashmap_iterator_t *itr)
 {
     unsigned idx, size = hashmap_capacity(m);
     for (idx = itr->index; idx < size; idx++) {
-        hashmap_record_t *r = hashmap_at(m, idx);
-        if (r->hash != 0) {
-            itr->index = idx + 1;
-            itr->entry = r;
-            return 1;
-        }
+	hashmap_record_t *r = hashmap_at(m, idx);
+	if (r->hash != 0) {
+	    itr->index = idx + 1;
+	    itr->entry = r;
+	    return 1;
+	}
     }
     return 0;
 }
@@ -221,16 +223,18 @@ static void hashmap_remove(hashmap_t *m, hashmap_data_t key, hashmap_entry_destr
 {
     unsigned hash = hash6432shift(key);
     unsigned i, idx = hash & m->record_size_mask;
-    for(i = 0; i < DELTA; ++i) {
-        hashmap_record_t *r = hashmap_at(m, idx);
-        if(r->hash == hash && r->key == key) {
-            if(Destructor) { Destructor(r->val); }
-            r->hash = 0;
-            r->key    = 0;
-            m->used_size -= 1;
-            return;
-        }
-        idx = (idx + 1) & m->record_size_mask;
+    for (i = 0; i < DELTA; ++i) {
+	hashmap_record_t *r = hashmap_at(m, idx);
+	if (r->hash == hash && r->key == key) {
+	    if (Destructor) {
+		Destructor(r->val);
+	    }
+	    r->hash = 0;
+	    r->key = 0;
+	    m->used_size -= 1;
+	    return;
+	}
+	idx = (idx + 1) & m->record_size_mask;
     }
 }
 
