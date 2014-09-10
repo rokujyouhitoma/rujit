@@ -845,10 +845,16 @@ jit_prelude.c: $(srcdir)/tool/compile_prelude.rb $(srcdir)/jit_prelude.rb
 	$(ECHO) generating $@
 	$(Q) $(BASERUBY) -I$(srcdir) $(srcdir)/tool/compile_prelude.rb $(srcdir)/jit_prelude.rb $@
 
+jit_cgen_cmd.h: $(srcdir)/make_pch.rb \
+	{$(VPATH)}lir_template.h {$(VPATH)}vm_exec.h
+	$(Q) $(BASERUBY) $(srcdir)/make_pch.rb . $(srcdir) $(CC) $(arch) > $@
+
 jit.$(OBJEXT): {$(VPATH)}jit.c {$(VPATH)}jit_opts.h \
 	{$(VPATH)}jit_prelude.c \
 	{$(VPATH)}jit_hashmap.c \
 	{$(VPATH)}jit_record.c \
+	{$(VPATH)}jit_codegen.c \
+	{$(VPATH)}jit_cgen_cmd.h \
 	{$(VPATH)}lir.c {$(VPATH)}yarv2lir.c
 	@$(ECHO) compiling $<
 	$(Q) $(CC) $(CFLAGS) $(XCFLAGS) $(CPPFLAGS) $(COUTFLAG)$@ -c $<

@@ -8,6 +8,8 @@
 
 **********************************************************************/
 
+#include <dlfcn.h> // dlopen, dlclose, dlsym
+#include <sys/time.h> // gettimeofday
 #include "ruby/ruby.h"
 #include "ruby/vm.h"
 #include "gc.h"
@@ -23,10 +25,13 @@
 #include "jit_opts.h"
 #include "jit_prelude.c"
 #include "jit_hashmap.c"
+// static const char cmd_template[];
+#include "jit_cgen_cmd.h"
 
 // imported api from ruby-core
 extern void vm_search_method(rb_call_info_t *ci, VALUE recv);
 extern VALUE rb_f_block_given_p(void);
+extern VALUE rb_reg_new_ary(VALUE ary, int opt);
 
 static inline int
 check_cfunc(const rb_method_entry_t *me, VALUE (*func)())
@@ -209,6 +214,22 @@ static void dump_inst(jit_event_t *e)
 	fprintf(stderr, "%04ld pc=%p %02d %s\n",
 	        pc, e->pc, e->opcode, insn_name(e->opcode));
     }
+}
+
+#define JIT_PROFILE_ENTER(msg) jit_profile((msg), 0)
+#define JIT_PROFILE_LEAVE(msg, cond) jit_profile((msg), (cond))
+
+static void jit_profile(const char *msg, int print_log)
+{
+    static uint64_t last = 0;
+    uint64_t time;
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    time = tv.tv_sec * 1000 + tv.tv_usec / 1000;
+    if (print_log) {
+	fprintf(stderr, "%s : %" PRI_LL_PREFIX "u msec\n", msg, (time - last));
+    }
+    last = time;
 }
 
 static jit_event_t *jit_init_event(jit_event_t *e, rb_jit_t *jit, rb_thread_t *th, rb_control_frame_t *cfp, VALUE *pc)
@@ -1465,3 +1486,4 @@ static void dump_trace(trace_recorder_t *rec)
 
 #include "jit_record.c"
 #include "jit_optimize.c"
+#include "jit_codegen.c"
