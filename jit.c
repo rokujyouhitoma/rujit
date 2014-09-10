@@ -17,6 +17,7 @@
 #include "insns_info.inc"
 #include "vm_insnhelper.h"
 #include "vm_exec.h"
+#include "iseq.h"
 
 #include "jit.h"
 #include "jit_opts.h"
@@ -85,7 +86,16 @@ typedef struct jit_list {
 
 typedef struct const_pool {
     jit_list_t list;
+    jit_list_t inst;
 } const_pool_t;
+
+typedef struct regstack {
+    jit_list_t list;
+} regstack_t;
+
+typedef struct call_stack {
+    jit_list_t list;
+} call_stack_t;
 
 typedef struct lir_inst_t {
     unsigned id;
@@ -98,18 +108,11 @@ typedef struct lir_inst_t {
 typedef struct lir_basicblock_t {
     lir_inst_t base;
     VALUE *start_pc;
+    call_stack_t *call_stack;
     jit_list_t insts;
     jit_list_t succs;
     jit_list_t preds;
 } basicblock_t;
-
-typedef struct regstack {
-    jit_list_t list;
-} regstack_t;
-
-typedef struct call_stack {
-    jit_list_t list;
-} call_stack_t;
 
 typedef struct trace_side_exit_handler trace_side_exit_handler_t;
 
@@ -462,6 +465,7 @@ static void jit_list_delete(jit_list_t *self)
 static const_pool_t *const_pool_init(const_pool_t *self)
 {
     jit_list_init(&self->list);
+    jit_list_init(&self->inst);
     return self;
 }
 
@@ -477,17 +481,19 @@ static int const_pool_contain(const_pool_t *self, const void *ptr)
     return -1;
 }
 
-static void const_pool_add(const_pool_t *self, const void *ptr)
+static void const_pool_add(const_pool_t *self, const void *ptr, lir_t val)
 {
     if (const_pool_contain(self, ptr) != -1) {
 	return;
     }
     jit_list_add(&self->list, (uintptr_t)ptr);
+    jit_list_add(&self->inst, (uintptr_t)val);
 }
 
 static void const_pool_delete(const_pool_t *self)
 {
     jit_list_delete(&self->list);
+    jit_list_delete(&self->inst);
 }
 
 /* } const pool */
@@ -523,6 +529,7 @@ static lir_inst_t *lir_inst_allocate(trace_recorder_t *recorder, lir_inst_t *src
 static basicblock_t *basicblock_new(struct memory_pool *mp, VALUE *start_pc)
 {
     basicblock_t *bb = (basicblock_t *)memory_pool_alloc(mp, sizeof(*bb));
+    bb->call_stack = NULL;
     bb->start_pc = start_pc;
     jit_list_init(&bb->insts);
     jit_list_init(&bb->succs);
@@ -581,8 +588,10 @@ static lir_t basicblock_get_terminator(basicblock_t *bb)
 
 static lir_t trace_recorder_insert_stackpop(trace_recorder_t *rec);
 static void dump_trace(trace_recorder_t *rec);
+static void stop_recording(rb_jit_t *jit);
 static lir_t Emit_StackPop(trace_recorder_t *rec);
 static lir_t Emit_Jump(trace_recorder_t *rec, basicblock_t *bb);
+static lir_t Emit_Exit(trace_recorder_t *rec, VALUE *target_pc);
 
 /* regstack { */
 static regstack_t *regstack_init(regstack_t *stack)
@@ -684,23 +693,25 @@ static variable_table_t *variable_table_init(struct memory_pool *mp, int level)
     vtable->level = level;
     return vtable;
 }
-static void variable_table_expand(variable_table_t *vtable, int idx)
+static void variable_table_expand(variable_table_t *vtable, unsigned idx)
 {
     assert(idx >= 0);
-    while (vtable->table.size > idx) {
+    while (vtable->table.size <= idx) {
 	jit_list_add(&vtable->table, 0);
     }
 }
 
-static void variable_table_set(variable_table_t *vtable, int idx, lir_t reg)
+static void variable_table_set(variable_table_t *vtable, unsigned idx, lir_t reg)
 {
     variable_table_expand(vtable, idx);
     jit_list_set(&vtable->table, idx, (uintptr_t)reg);
 }
 
-static lir_t variable_table_get(variable_table_t *vtable, int idx)
+static lir_t variable_table_get(variable_table_t *vtable, unsigned idx)
 {
-    variable_table_expand(vtable, idx);
+    if (idx >= vtable->table.size) {
+	return NULL;
+    }
     return (lir_t)jit_list_get(&vtable->table, idx);
 }
 
@@ -739,8 +750,11 @@ static void call_stack_push(call_stack_t *cs, variable_table_t *vtable)
     jit_list_add(&cs->list, (uintptr_t)vtable);
 }
 
-static variable_table_t *call_stack_get(call_stack_t *cs, int idx)
+static variable_table_t *call_stack_get(call_stack_t *cs, unsigned idx)
 {
+    if (idx >= cs->list.size) {
+	return NULL;
+    }
     return (variable_table_t *)jit_list_get(&cs->list, idx);
 }
 
@@ -865,10 +879,50 @@ static basicblock_t *trace_recorder_get_block(trace_recorder_t *rec, VALUE *pc)
     return NULL;
 }
 
+static void compile_trace(rb_jit_t *jit, trace_recorder_t *recorder)
+{
+    fprintf(stderr, "compiled\n");
+    dump_trace(recorder);
+    asm volatile("int3");
+}
+
+static void trace_recorder_abort(trace_recorder_t *rec, jit_event_t *e, enum trace_error_state reason)
+{
+    rb_jit_t *jit = current_jit;
+    if (reason != TRACE_ERROR_OK) {
+	rb_control_frame_t *reg_cfp = e->cfp;
+	const rb_iseq_t *iseq = GET_ISEQ();
+	VALUE file = iseq->location.path;
+	fprintf(stderr, "failed to trace at file:%s line:%d because %s\n",
+	        RSTRING_PTR(file),
+	        rb_iseq_line_no(iseq, e->pc - iseq->iseq_encoded),
+	        trace_error_message[reason]);
+	trace_recorder_take_snapshot(rec, e->pc);
+	Emit_Exit(rec, e->pc);
+	if (reason != TRACE_ERROR_REGSTACK_UNDERFLOW) {
+	    compile_trace(jit, rec);
+	}
+    }
+    stop_recording(jit);
+    rec->trace = NULL;
+    trace_recorder_clear(rec, NULL, 0);
+}
+
+static void basicblock_set_callstack(struct memory_pool *mpool, basicblock_t *bb, basicblock_t *old)
+{
+    if (old == NULL || old->call_stack) {
+	bb->call_stack = call_stack_new(mpool);
+    }
+    else {
+	bb->call_stack = call_stack_clone(mpool, old->call_stack);
+    }
+}
+
 static basicblock_t *trace_recorder_create_block(trace_recorder_t *rec, VALUE *pc)
 {
-    basicblock_t *bb = basicblock_new(&(rec)->mpool, pc);
+    basicblock_t *bb = basicblock_new(&rec->mpool, pc);
     bb->base.id = rec->bblist.size;
+    basicblock_set_callstack(&rec->mpool, bb, rec->cur_bb);
     jit_list_add(&rec->bblist, (uintptr_t)bb);
     return bb;
 }
@@ -888,13 +942,6 @@ static lir_t trace_recorder_insert_stackpop(trace_recorder_t *rec)
     }
     rec->cur_bb = cur_bb;
     return reg;
-}
-
-static void compile_trace(rb_jit_t *jit, trace_recorder_t *recorder)
-{
-    fprintf(stderr, "compiled\n");
-    dump_trace(recorder);
-    asm volatile("int3");
 }
 
 static VALUE *trace_invoke(rb_jit_t *jit, jit_event_t *e, trace_t *trace)
@@ -1193,6 +1240,7 @@ static VALUE *trace_selection(rb_jit_t *jit, jit_event_t *e)
     if (is_recording(jit)) {
 	if (is_end_of_trace(jit->recorder, e)) {
 	    stop_recording(jit);
+	    record_insn(jit->recorder, e);
 	    compile_trace(jit, jit->recorder);
 	}
 	else {
@@ -1284,12 +1332,27 @@ static int lir_is_terminator(lir_inst_t *inst)
     switch (inst->opcode) {
 #define IS_TERMINATOR(OPNAME) \
     case OPCODE_I##OPNAME:    \
+	return LIR_IS_TERMINATOR_##OPNAME;
+	LIR_EACH(IS_TERMINATOR);
+	default:
+	    assert(0 && "unreachable");
+#undef IS_TERMINATOR
+    }
+    return 0;
+}
+
+static int lir_is_guard(lir_inst_t *inst)
+{
+    switch (inst->opcode) {
+#define IS_TERMINATOR(OPNAME) \
+    case OPCODE_I##OPNAME:    \
 	return LIR_IS_GUARD_INST_##OPNAME;
 	LIR_EACH(IS_TERMINATOR);
 	default:
 	    assert(0 && "unreachable");
 #undef IS_TERMINATOR
     }
+    return 0;
 }
 
 static void dump_lir_inst(lir_inst_t *inst)
@@ -1323,20 +1386,20 @@ static void dump_lir_block(basicblock_t *block)
 static void dump_side_exit(trace_recorder_t *rec)
 {
     if (DUMP_LIR > 0) {
-	// FIXME implement dump_side_exit
-	//int i;
-	//hashmap_iterator_t itr = { 0, 0 };
-	//while (hashmap_next(&TraceRecorderGetTrace(Rec)->StackMap, &itr)) {
-	//    VALUE *pc = (VALUE *)itr.entry->key;
-	//    StackMap *stack = GetStackMap(Rec, pc);
-	//    fprintf(stderr, "side exit(%d): pc=%p: %s ", stack->size, pc,
-	//	    TraceStatusToStr(stack->flag));
-	//    for (i = 0; i < stack->size; i++) {
-	//	lir_inst_t *inst = stack->regs[i];
-	//	fprintf(stderr, "  [%d] = %04ld;", i, lir_getid(inst));
-	//    }
-	//    fprintf(stderr, "\n");
-	//}
+	int i;
+	hashmap_iterator_t itr = { 0, 0 };
+	while (hashmap_next(&rec->stack_map, &itr)) {
+	    VALUE *pc = (VALUE *)itr.entry->key;
+	    regstack_t *stack = (regstack_t *)itr.entry->val;
+	    fprintf(stderr, "side exit(size=%04d): pc=%p: ", stack->list.size - LIR_RESERVED_REGSTACK_SIZE, pc);
+	    for (i = 0; i < stack->list.size; i++) {
+		lir_t inst = (lir_t)jit_list_get(&stack->list, i);
+		if (inst) {
+		    fprintf(stderr, "  [%d] = %04ld;", i - LIR_RESERVED_REGSTACK_SIZE, lir_getid(inst));
+		}
+	    }
+	    fprintf(stderr, "\n");
+	}
     }
 }
 
