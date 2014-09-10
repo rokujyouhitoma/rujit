@@ -31,11 +31,15 @@
 
 static lir_t EmitLoadConst(trace_recorder_t *rec, VALUE val)
 {
-    lir_t Rval = NULL;
+    unsigned inst_size;
     basicblock_t *BB = rec->entry_bb;
     basicblock_t *prevBB = rec->cur_bb;
-    unsigned inst_size = basicblock_size(BB);
+    lir_t Rval = trace_recorder_get_const(rec, val);
+    if (Rval) {
+	return Rval;
+    }
     rec->cur_bb = BB;
+    inst_size = basicblock_size(BB);
     if (NIL_P(val)) {
 	Rval = EmitIR(LoadConstNil);
     }
@@ -60,9 +64,9 @@ static lir_t EmitLoadConst(trace_recorder_t *rec, VALUE val)
     if (Rval == NULL) {
 	Rval = EmitIR(LoadConstObject, val);
     }
+    trace_recorder_add_const(rec, val, Rval);
     if (inst_size != basicblock_size(BB)) {
-	const_pool_add(&rec->trace->cpool, (const void *)val, Rval);
-	basicblock_swap_inst(rec->entry_bb, inst_size - 1, inst_size);
+	basicblock_swap_inst(BB, inst_size - 1, inst_size);
     }
     rec->cur_bb = prevBB;
     return Rval;
@@ -323,8 +327,14 @@ static void trace_recorder_set_localvar(trace_recorder_t *rec, basicblock_t *bb,
 static void _record_getlocal(trace_recorder_t *rec, rb_num_t level, lindex_t idx)
 {
     lir_t Rval;
-    if ((Rval = trace_recorder_get_localvar(rec, rec->cur_bb, (int)level, (int)idx)) == NULL) {
-	// val is not loaded from env
+    if (LIR_CACHE_ENV_OPERATION) {
+	if ((Rval = trace_recorder_get_localvar(rec, rec->cur_bb, (int)level, (int)idx)) == NULL) {
+	    // val is not loaded from env
+	    Rval = EmitIR(EnvLoad, (int)level, (int)idx);
+	    trace_recorder_set_localvar(rec, rec->cur_bb, (int)level, (int)idx, Rval);
+	}
+    }
+    else {
 	Rval = EmitIR(EnvLoad, (int)level, (int)idx);
     }
     _PUSH(Rval);
@@ -334,7 +344,9 @@ static void _record_setlocal(trace_recorder_t *rec, rb_num_t level, lindex_t idx
 {
     lir_t Rval = _POP();
     EmitIR(EnvStore, (int)level, (int)idx, Rval);
-    trace_recorder_set_localvar(rec, rec->cur_bb, (int)level, (int)idx, Rval);
+    if (LIR_CACHE_ENV_OPERATION) {
+	trace_recorder_set_localvar(rec, rec->cur_bb, (int)level, (int)idx, Rval);
+    }
 }
 
 // record API

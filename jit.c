@@ -101,7 +101,7 @@ typedef struct lir_inst_t {
     unsigned id;
     unsigned short flag;
     unsigned short opcode;
-    struct lir_inst_t *parent;
+    struct lir_basicblock_t *parent;
     jit_list_t *user;
 } lir_inst_t, *lir_t;
 
@@ -219,6 +219,18 @@ static jit_event_t *jit_init_event(jit_event_t *e, rb_jit_t *jit, rb_thread_t *t
     e->opcode = get_opcode(e->cfp, e->pc);
     return e;
 }
+
+static lir_t trace_recorder_insert_stackpop(trace_recorder_t *rec);
+static void dump_trace(trace_recorder_t *rec);
+static void stop_recording(rb_jit_t *jit);
+static call_stack_t *call_stack_new(struct memory_pool *mp);
+static call_stack_t *call_stack_clone(struct memory_pool *mp, call_stack_t *old);
+static lir_t Emit_StackPop(trace_recorder_t *rec);
+static lir_t Emit_Jump(trace_recorder_t *rec, basicblock_t *bb);
+static lir_t Emit_Exit(trace_recorder_t *rec, VALUE *target_pc);
+static int lir_is_terminator(lir_inst_t *inst);
+static int lir_is_guard(lir_inst_t *inst);
+static int elimnate_guard(trace_recorder_t *rec, lir_inst_t *inst);
 
 static rb_jit_t *current_jit = NULL;
 static VALUE rb_cMath;
@@ -481,13 +493,15 @@ static int const_pool_contain(const_pool_t *self, const void *ptr)
     return -1;
 }
 
-static void const_pool_add(const_pool_t *self, const void *ptr, lir_t val)
+static int const_pool_add(const_pool_t *self, const void *ptr, lir_t val)
 {
-    if (const_pool_contain(self, ptr) != -1) {
-	return;
+    unsigned idx;
+    if ((idx = const_pool_contain(self, ptr)) != -1) {
+	return idx;
     }
     jit_list_add(&self->list, (uintptr_t)ptr);
     jit_list_add(&self->inst, (uintptr_t)val);
+    return self->list.size - 1;
 }
 
 static void const_pool_delete(const_pool_t *self)
@@ -570,7 +584,6 @@ static void basicblock_append(basicblock_t *bb, lir_inst_t *inst)
     jit_list_add(&bb->insts, (uintptr_t)inst);
 }
 
-static int lir_is_terminator(lir_inst_t *inst);
 static lir_t basicblock_get_terminator(basicblock_t *bb)
 {
     lir_t reg;
@@ -584,14 +597,22 @@ static lir_t basicblock_get_terminator(basicblock_t *bb)
     return NULL;
 }
 
-/* } basicblock */
+static void basicblock_set_callstack(struct memory_pool *mpool, basicblock_t *bb, basicblock_t *old)
+{
+    if (old == NULL || old->call_stack) {
+	bb->call_stack = call_stack_new(mpool);
+    }
+    else {
+	bb->call_stack = call_stack_clone(mpool, old->call_stack);
+    }
+}
 
-static lir_t trace_recorder_insert_stackpop(trace_recorder_t *rec);
-static void dump_trace(trace_recorder_t *rec);
-static void stop_recording(rb_jit_t *jit);
-static lir_t Emit_StackPop(trace_recorder_t *rec);
-static lir_t Emit_Jump(trace_recorder_t *rec, basicblock_t *bb);
-static lir_t Emit_Exit(trace_recorder_t *rec, VALUE *target_pc);
+static lir_t basicblock_get(basicblock_t *bb, int i)
+{
+    return (lir_t)jit_list_get(&bb->insts, i);
+}
+
+/* } basicblock */
 
 /* regstack { */
 static regstack_t *regstack_init(regstack_t *stack)
@@ -647,15 +668,26 @@ static regstack_t *regstack_clone(struct memory_pool *mpool, regstack_t *old)
     return stack;
 }
 
+static lir_t regstack_get_direct(regstack_t *stack, int n)
+{
+    assert(0 <= n && n < stack->list.size);
+    return (lir_t)jit_list_get(&stack->list, n);
+}
+
+static void regstack_set_direct(regstack_t *stack, int n, lir_t val)
+{
+    assert(0 <= n && n < stack->list.size);
+    jit_list_set(&stack->list, n, (uintptr_t)val);
+}
+
 static void regstack_set(regstack_t *stack, int n, lir_t reg)
 {
     n = stack->list.size - n - 1;
-    assert(0 <= n && n < stack->list.size);
     if (DUMP_STACK_MAP) {
 	fprintf(stderr, "set: %d %p\n", n, reg);
     }
     assert(reg != NULL);
-    jit_list_set(&stack->list, n, (uintptr_t)reg);
+    regstack_set_direct(stack, n, reg);
 }
 
 static lir_t regstack_top(regstack_t *stack, int n)
@@ -844,10 +876,19 @@ static int trace_recorder_is_full(trace_recorder_t *recorder)
     return recorder->last_inst_id - 2 == LIR_MAX_TRACE_LENGTH;
 }
 
-static int trace_recorder_add_const(trace_recorder_t *recorder, lir_t reg, VALUE *value)
+static lir_t trace_recorder_get_const(trace_recorder_t *recorder, VALUE value)
 {
-    assert(0 && "FIXME implement");
-    return 0;
+    int idx = const_pool_contain(&recorder->trace->cpool, (const void *)value);
+    if (idx >= 0) {
+	return (lir_t)jit_list_get(&recorder->trace->cpool.inst, idx);
+    }
+    return NULL;
+}
+
+static lir_t trace_recorder_add_const(trace_recorder_t *recorder, VALUE value, lir_t reg)
+{
+    int idx = const_pool_add(&recorder->trace->cpool, (const void *)value, reg);
+    return (lir_t)jit_list_get(&recorder->trace->cpool.inst, idx);
 }
 
 static CALL_INFO trace_recorder_clone_cache(trace_recorder_t *recorder, CALL_INFO ci)
@@ -908,16 +949,6 @@ static void trace_recorder_abort(trace_recorder_t *rec, jit_event_t *e, enum tra
     trace_recorder_clear(rec, NULL, 0);
 }
 
-static void basicblock_set_callstack(struct memory_pool *mpool, basicblock_t *bb, basicblock_t *old)
-{
-    if (old == NULL || old->call_stack) {
-	bb->call_stack = call_stack_new(mpool);
-    }
-    else {
-	bb->call_stack = call_stack_clone(mpool, old->call_stack);
-    }
-}
-
 static basicblock_t *trace_recorder_create_block(trace_recorder_t *rec, VALUE *pc)
 {
     basicblock_t *bb = basicblock_new(&rec->mpool, pc);
@@ -949,15 +980,16 @@ static VALUE *trace_invoke(rb_jit_t *jit, jit_event_t *e, trace_t *trace)
     return e->pc;
 }
 
-static int peephole(trace_recorder_t *recorder, lir_inst_t *inst)
+static int peephole(trace_recorder_t *rec, lir_inst_t *inst)
 {
+    if (lir_is_guard(inst) && elimnate_guard(rec, inst)) {
+	// guard can remove
+	return 1;
+    }
     return 0;
 }
 
-static lir_inst_t *constant_fold_inst(trace_recorder_t *recorder, lir_inst_t *inst)
-{
-    return inst;
-}
+static lir_inst_t *constant_fold_inst(trace_recorder_t *recorder, lir_inst_t *inst);
 
 static void dump_lir_inst(lir_inst_t *inst);
 
@@ -1419,3 +1451,4 @@ static void dump_trace(trace_recorder_t *rec)
 }
 
 #include "jit_record.c"
+#include "jit_optimize.c"
