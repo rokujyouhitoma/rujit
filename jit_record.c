@@ -9,8 +9,8 @@
  **********************************************************************/
 #define CREATE_BLOCK(REC, PC) trace_recorder_create_block(REC, PC)
 
-//#undef GET_GLOBAL_CONSTANT_STATE
-//#define GET_GLOBAL_CONSTANT_STATE() (*ruby_vm_global_constant_state_ptr)
+#undef GET_GLOBAL_CONSTANT_STATE
+#define GET_GLOBAL_CONSTANT_STATE() (*jit_runtime.global_constant_state)
 //
 #define not_support_op(rec, E, OPNAME)                                      \
     do {                                                                    \
@@ -223,7 +223,7 @@ static void EmitSpecialInst1(trace_recorder_t *rec, jit_event_t *e)
 //    int argc = ci->argc;
 //    if ((ci->flag & VM_CALL_ARGS_BLOCKARG) || ci->blockiseq != 0) {
 //        fprintf(stderr, "Class.new with block is not supported\n");
-//        TracerecorderAbort(rec, REG_CFP, REG_PC, TRACE_ERROR_UNSUPPORT_OP);
+//        trace_recorder_abort(rec, e, TRACE_ERROR_UNSUPPORT_OP);
 //        return;
 //    }
 //    _PUSH(EmitIR(AllocObject, regs[0], argc, regs + 1));
@@ -302,7 +302,7 @@ static void EmitJump(trace_recorder_t *rec, VALUE *pc, int link)
 //    }
 //#endif
 //    trace_recorder_take_snapshot(rec, REG_PC);
-//    TracerecorderAbort(rec, REG_CFP, REG_PC, TRACE_ERROR_NATIVE_METHOD);
+//    trace_recorder_abort(rec, e, TRACE_ERROR_NATIVE_METHOD);
 //    return;
 //}
 
@@ -382,37 +382,37 @@ static void record_setspecial(trace_recorder_t *rec, jit_event_t *e)
 
 static void record_getinstancevariable(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    IC ic = (IC)GET_OPERAND(2);
-    //    ID id = (ID)GET_OPERAND(1);
-    //    VALUE obj = GET_SELF();
-    //    lir_t Rrecv = EmitIR(LoadSelf);
-    //
-    //    if (vm_load_cache(obj, id, ic, NULL, 0)) {
-    //        trace_recorder_take_snapshot(rec, REG_PC);
-    //        EmitIR(GuardTypeObject, REG_PC, Rrecv);
-    //        EmitIR(GuardProperty, REG_PC, Rrecv, 0 /*!is_attr*/, (void *)ic);
-    //        _PUSH(EmitIR(GetPropertyName, Rrecv, ic->ic_value.index));
-    //        return;
-    //    }
+    IC ic = (IC)GET_OPERAND(2);
+    ID id = (ID)GET_OPERAND(1);
+    VALUE obj = GET_SELF();
+    lir_t Rrecv = EmitIR(LoadSelf);
+
+    if (vm_load_cache(obj, id, ic, NULL, 0)) {
+	trace_recorder_take_snapshot(rec, REG_PC);
+	EmitIR(GuardTypeObject, REG_PC, Rrecv);
+	EmitIR(GuardProperty, REG_PC, Rrecv, 0 /*!is_attr*/, (void *)ic);
+	_PUSH(EmitIR(GetPropertyName, Rrecv, ic->ic_value.index));
+	return;
+    }
     not_support_op(rec, e, "getinstancevariable");
 }
 
 static void record_setinstancevariable(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    IC ic = (IC)GET_OPERAND(2);
-    //    ID id = (ID)GET_OPERAND(1);
-    //    VALUE obj = GET_SELF();
-    //    lir_t Rrecv = EmitIR(LoadSelf);
-    //
-    //    int cacheable = vm_load_cache(obj, id, ic, NULL, 0);
-    //    if (cacheable) {
-    //        trace_recorder_take_snapshot(rec, REG_PC);
-    //        EmitIR(GuardTypeObject, REG_PC, Rrecv);
-    //        EmitIR(GuardProperty, REG_PC, Rrecv, 0 /*!is_attr*/, (void *)ic);
-    //        EmitIR(SetPropertyName, Rrecv, ic->ic_value.index, _POP());
-    //        return;
-    //    }
-    //
+    IC ic = (IC)GET_OPERAND(2);
+    ID id = (ID)GET_OPERAND(1);
+    VALUE obj = GET_SELF();
+    lir_t Rrecv = EmitIR(LoadSelf);
+
+    int cacheable = vm_load_cache(obj, id, ic, NULL, 0);
+    if (cacheable) {
+	trace_recorder_take_snapshot(rec, REG_PC);
+	EmitIR(GuardTypeObject, REG_PC, Rrecv);
+	EmitIR(GuardProperty, REG_PC, Rrecv, 0 /*!is_attr*/, (void *)ic);
+	EmitIR(SetPropertyName, Rrecv, ic->ic_value.index, _POP());
+	return;
+    }
+
     not_support_op(rec, e, "setinstancevariable");
 }
 
@@ -502,89 +502,88 @@ static inline VALUE jit_vm_get_const_base(const rb_iseq_t *iseq, const VALUE *ep
 
 static void record_putspecialobject(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    enum vm_special_object_type type
-    //        = (enum vm_special_object_type)GET_OPERAND(1);
-    //    VALUE val = 0;
-    //    switch (type) {
-    //    case VM_SPECIAL_OBJECT_VMCORE:
-    //        val = rb_mRubyVMFrozenCore;
-    //        break;
-    //    case VM_SPECIAL_OBJECT_CBASE:
-    //        val = jit_vm_get_cbase(GET_ISEQ(), GET_EP());
-    //        break;
-    //    case VM_SPECIAL_OBJECT_CONST_BASE:
-    //        val = jit_vm_get_const_base(GET_ISEQ(), GET_EP());
-    //        break;
-    //    default:
-    //        rb_bug("putspecialobject insn: unknown value_type");
-    //    }
-    //    _PUSH(EmitLoadConst(rec, val));
+    enum vm_special_object_type type = (enum vm_special_object_type)GET_OPERAND(1);
+    VALUE val = 0;
+    switch (type) {
+	case VM_SPECIAL_OBJECT_VMCORE:
+	    val = rb_mRubyVMFrozenCore;
+	    break;
+	case VM_SPECIAL_OBJECT_CBASE:
+	    val = jit_vm_get_cbase(GET_ISEQ(), GET_EP());
+	    break;
+	case VM_SPECIAL_OBJECT_CONST_BASE:
+	    val = jit_vm_get_const_base(GET_ISEQ(), GET_EP());
+	    break;
+	default:
+	    rb_bug("putspecialobject insn: unknown value_type");
+    }
+    _PUSH(EmitLoadConst(rec, val));
 }
 
 static void record_putiseq(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    ISEQ iseq = (ISEQ)GET_OPERAND(1);
-    //    _PUSH(EmitLoadConst(rec, iseq->self));
+    ISEQ iseq = (ISEQ)GET_OPERAND(1);
+    _PUSH(EmitLoadConst(rec, iseq->self));
 }
 
 static void record_putstring(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    VALUE val = (VALUE)GET_OPERAND(1);
-    //    lir_t Rstr = EmitLoadConst(rec, val);
-    //    _PUSH(EmitIR(AllocString, Rstr));
+    VALUE val = (VALUE)GET_OPERAND(1);
+    lir_t Rstr = EmitLoadConst(rec, val);
+    _PUSH(EmitIR(AllocString, Rstr));
 }
 
 static void record_concatstrings(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    rb_num_t num = (rb_num_t)GET_OPERAND(1);
-    //    rb_num_t i = num - 1;
-    //
-    //    lir_t Rval = EmitIR(AllocString, _TOPN(i));
-    //    while (i-- > 0) {
-    //        Rval = EmitIR(StringAdd, Rval, _TOPN(i));
-    //    }
-    //    for (i = 0; i < num; i++) {
-    //        _POP();
-    //    }
-    //    _PUSH(Rval);
+    rb_num_t num = (rb_num_t)GET_OPERAND(1);
+    rb_num_t i = num - 1;
+
+    lir_t Rval = EmitIR(AllocString, _TOPN(i));
+    while (i-- > 0) {
+	Rval = EmitIR(StringAdd, Rval, _TOPN(i));
+    }
+    for (i = 0; i < num; i++) {
+	_POP();
+    }
+    _PUSH(Rval);
 }
 
 static void record_tostring(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    lir_t Rval = EmitIR(ObjectToString, _POP());
-    //    _PUSH(Rval);
+    lir_t Rval = EmitIR(ObjectToString, _POP());
+    _PUSH(Rval);
 }
 
 static void record_toregexp(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    rb_num_t i;
-    //    rb_num_t cnt = (rb_num_t)GET_OPERAND(2);
-    //    rb_num_t opt = (rb_num_t)GET_OPERAND(1);
-    //    lir_t regs[cnt];
-    //    lir_t Rary;
-    //    for (i = 0; i < cnt; i++) {
-    //        regs[cnt - i - 1] = _POP();
-    //    }
-    //    Rary = EmitIR(AllocArray, (int)cnt, regs);
-    //    _PUSH(EmitIR(AllocRegexFromArray, Rary, (int)opt));
+    rb_num_t i;
+    rb_num_t cnt = (rb_num_t)GET_OPERAND(2);
+    rb_num_t opt = (rb_num_t)GET_OPERAND(1);
+    lir_t regs[cnt];
+    lir_t Rary;
+    for (i = 0; i < cnt; i++) {
+	regs[cnt - i - 1] = _POP();
+    }
+    Rary = EmitIR(AllocArray, (int)cnt, regs);
+    _PUSH(EmitIR(AllocRegexFromArray, Rary, (int)opt));
 }
 
 static void record_newarray(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    rb_num_t i, num = (rb_num_t)GET_OPERAND(1);
-    //    lir_t argv[num];
-    //    for (i = 0; i < num; i++) {
-    //        argv[i] = _POP();
-    //    }
-    //    _PUSH(EmitIR(AllocArray, (int)num, argv));
+    rb_num_t i, num = (rb_num_t)GET_OPERAND(1);
+    lir_t argv[num];
+    for (i = 0; i < num; i++) {
+	argv[i] = _POP();
+    }
+    _PUSH(EmitIR(AllocArray, (int)num, argv));
 }
 
 static void record_duparray(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    VALUE val = (VALUE)GET_OPERAND(1);
-    //    lir_t Rval = EmitLoadConst(rec, val);
-    //    lir_t argv[] = { Rval };
-    //    _PUSH(EmitIR(InvokeNative, rb_ary_resurrect, 1, argv));
+    VALUE val = (VALUE)GET_OPERAND(1);
+    lir_t Rval = EmitLoadConst(rec, val);
+    lir_t argv[] = { Rval };
+    _PUSH(EmitIR(InvokeNative, rb_ary_resurrect, 1, argv));
 }
 
 static void record_expandarray(trace_recorder_t *rec, jit_event_t *e)
@@ -604,21 +603,21 @@ static void record_splatarray(trace_recorder_t *rec, jit_event_t *e)
 
 static void record_newhash(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    rb_num_t i, num = (rb_num_t)GET_OPERAND(1);
-    //    lir_t argv[num];
-    //    for (i = num; i > 0; i -= 2) {
-    //        argv[i - 1] = _POP(); // key
-    //        argv[i - 2] = _POP(); // val
-    //    }
-    //    _PUSH(EmitIR(AllocHash, (int)num, argv));
+    rb_num_t i, num = (rb_num_t)GET_OPERAND(1);
+    lir_t argv[num];
+    for (i = num; i > 0; i -= 2) {
+	argv[i - 1] = _POP(); // key
+	argv[i - 2] = _POP(); // val
+    }
+    _PUSH(EmitIR(AllocHash, (int)num, argv));
 }
 
 static void record_newrange(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    rb_num_t flag = (rb_num_t)GET_OPERAND(1);
-    //    lir_t Rhigh = _POP();
-    //    lir_t Rlow = _POP();
-    //    _PUSH(EmitIR(AllocRange, Rlow, Rhigh, (int)flag));
+    rb_num_t flag = (rb_num_t)GET_OPERAND(1);
+    lir_t Rhigh = _POP();
+    lir_t Rlow = _POP();
+    _PUSH(EmitIR(AllocRange, Rlow, Rhigh, (int)flag));
 }
 
 static void record_pop(trace_recorder_t *rec, jit_event_t *e)
@@ -635,53 +634,53 @@ static void record_dup(trace_recorder_t *rec, jit_event_t *e)
 
 static void record_dupn(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    rb_num_t i, n = (rb_num_t)GET_OPERAND(1);
-    //    lir_t argv[n];
-    //    // FIXME optimize
-    //    for (i = 0; i < n; i++) {
-    //        argv[i] = _TOPN(n - i - 1);
-    //    }
-    //    for (i = 0; i < n; i++) {
-    //        _PUSH(argv[i]);
-    //    }
+    rb_num_t i, n = (rb_num_t)GET_OPERAND(1);
+    lir_t argv[n];
+    // FIXME optimize
+    for (i = 0; i < n; i++) {
+	argv[i] = _TOPN(n - i - 1);
+    }
+    for (i = 0; i < n; i++) {
+	_PUSH(argv[i]);
+    }
 }
 
 static void record_swap(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    lir_t Rval = _POP();
-    //    lir_t Robj = _POP();
-    //    _PUSH(Robj);
-    //    _PUSH(Rval);
+    lir_t Rval = _POP();
+    lir_t Robj = _POP();
+    _PUSH(Robj);
+    _PUSH(Rval);
 }
 
 static void record_reput(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    _PUSH(_POP());
+    _PUSH(_POP());
 }
 
 static void record_topn(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    lir_t Rval;
-    //    rb_num_t n = (rb_num_t)GET_OPERAND(1);
-    //    assert(0 && "need to test");
-    //    Rval = _TOPN(n);
-    //    _PUSH(Rval);
+    lir_t Rval;
+    rb_num_t n = (rb_num_t)GET_OPERAND(1);
+    assert(0 && "need to test");
+    Rval = _TOPN(n);
+    _PUSH(Rval);
 }
 
 static void record_setn(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    rb_num_t n = (rb_num_t)GET_OPERAND(1);
-    //    lir_t Rval = _POP();
-    //    _SET(n, Rval);
-    //    _PUSH(Rval);
+    rb_num_t n = (rb_num_t)GET_OPERAND(1);
+    lir_t Rval = _POP();
+    _SET(n, Rval);
+    _PUSH(Rval);
 }
 
 static void record_adjuststack(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    rb_num_t i, n = (rb_num_t)GET_OPERAND(1);
-    //    for (i = 0; i < n; i++) {
-    //        _POP();
-    //    }
+    rb_num_t i, n = (rb_num_t)GET_OPERAND(1);
+    for (i = 0; i < n; i++) {
+	_POP();
+    }
 }
 
 static void record_defined(trace_recorder_t *rec, jit_event_t *e)
@@ -691,22 +690,23 @@ static void record_defined(trace_recorder_t *rec, jit_event_t *e)
 
 static void record_checkmatch(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    lir_t Rpattern = _POP();
-    //    lir_t Rtarget = _POP();
-    //    rb_event_flag_t flag = (rb_event_flag_t)GET_OPERAND(1);
-    //    enum vm_check_match_type checkmatch_type
-    //        = (enum vm_check_match_type)(flag & VM_CHECKMATCH_TYPE_MASK);
-    //    if (flag & VM_CHECKMATCH_ARRAY) {
-    //        _PUSH(EmitIR(PatternMatchRange, Rpattern, Rtarget, checkmatch_type));
-    //    } else {
-    //        _PUSH(EmitIR(PatternMatch, Rpattern, Rtarget, checkmatch_type));
-    //    }
+    lir_t Rpattern = _POP();
+    lir_t Rtarget = _POP();
+    rb_event_flag_t flag = (rb_event_flag_t)GET_OPERAND(1);
+    enum vm_check_match_type checkmatch_type
+        = (enum vm_check_match_type)(flag & VM_CHECKMATCH_TYPE_MASK);
+    if (flag & VM_CHECKMATCH_ARRAY) {
+	_PUSH(EmitIR(PatternMatchRange, Rpattern, Rtarget, checkmatch_type));
+    }
+    else {
+	_PUSH(EmitIR(PatternMatch, Rpattern, Rtarget, checkmatch_type));
+    }
 }
 
 static void record_trace(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    rb_event_flag_t flag = (rb_event_flag_t)GET_OPERAND(1);
-    //    EmitIR(Trace, flag);
+    rb_event_flag_t flag = (rb_event_flag_t)GET_OPERAND(1);
+    EmitIR(Trace, flag);
 }
 
 static void record_defineclass(trace_recorder_t *rec, jit_event_t *e)
@@ -716,30 +716,32 @@ static void record_defineclass(trace_recorder_t *rec, jit_event_t *e)
 
 static void record_send(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    CALL_INFO ci = (CALL_INFO)GET_OPERAND(1);
-    //    lir_t Rblock = 0;
-    //    rb_block_t *block = NULL;
-    //    ci->argc = ci->orig_argc;
-    //    ci->blockptr = 0;
-    //    // vm_caller_setup_args(th, REG_CFP, ci);
-    //    if (UNLIKELY(ci->flag & VM_CALL_ARGS_BLOCKARG)) {
-    //        not_support_op(rec, e, "send");
-    //        return;
-    //    } else if (ci->blockiseq != 0) {
-    //        ci->blockptr = RUBY_VM_GET_BLOCK_PTR_IN_CFP(reg_cfp);
-    //        ci->blockptr->iseq = ci->blockiseq;
-    //        ci->blockptr->proc = 0;
-    //        Rblock = EmitIR(LoadSelfAsBlock, ci->blockiseq);
-    //        block = ci->blockptr;
-    //    }
-    //
-    //    if (UNLIKELY(ci->flag & VM_CALL_ARGS_SPLAT)) {
-    //        not_support_op(rec, e, "send");
-    //        return;
-    //    }
-    //
-    //    trace_recorder_take_snapshot(rec, REG_PC);
-    //    EmitMethodCall(rec, REG_CFP, REG_PC, ci, block, Rblock, BIN(send));
+    CALL_INFO ci = (CALL_INFO)GET_OPERAND(1);
+    lir_t Rblock = 0;
+    rb_block_t *block = NULL;
+    ci->argc = ci->orig_argc;
+    ci->blockptr = 0;
+    // vm_caller_setup_args(th, REG_CFP, ci);
+    if (UNLIKELY(ci->flag & VM_CALL_ARGS_BLOCKARG)) {
+	not_support_op(rec, e, "send");
+	return;
+    }
+    else if (ci->blockiseq != 0) {
+	ci->blockptr = RUBY_VM_GET_BLOCK_PTR_IN_CFP(REG_CFP);
+	ci->blockptr->iseq = ci->blockiseq;
+	ci->blockptr->proc = 0;
+	Rblock = EmitIR(LoadSelfAsBlock, ci->blockiseq);
+	block = ci->blockptr;
+    }
+
+    if (UNLIKELY(ci->flag & VM_CALL_ARGS_SPLAT)) {
+	not_support_op(rec, e, "send");
+	return;
+    }
+
+    trace_recorder_take_snapshot(rec, REG_PC);
+    not_support_op(rec, e, "send");
+    //EmitMethodCall(rec, REG_CFP, REG_PC, ci, block, Rblock, BIN(send));
 }
 
 static void record_opt_str_freeze(trace_recorder_t *rec, jit_event_t *e)
@@ -750,25 +752,26 @@ static void record_opt_str_freeze(trace_recorder_t *rec, jit_event_t *e)
 
 static void record_opt_send_simple(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    CALL_INFO ci = (CALL_INFO)GET_OPERAND(1);
-    //    trace_recorder_take_snapshot(rec, REG_PC);
-    //    EmitMethodCall(rec, REG_CFP, REG_PC, ci, 0, 0, BIN(opt_send_simple));
+    CALL_INFO ci = (CALL_INFO)GET_OPERAND(1);
+    trace_recorder_take_snapshot(rec, REG_PC);
+    not_support_op(rec, e, "opt_send_simple");
+    //EmitMethodCall(rec, REG_CFP, REG_PC, ci, 0, 0, BIN(opt_send_simple));
 }
 
 static void record_invokesuper(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    //CALL_INFO ci = (CALL_INFO)GET_OPERAND(1);
-    //    trace_recorder_take_snapshot(rec, REG_PC);
-    //    //ci->argc = ci->orig_argc;
-    //    //ci->blockptr = !(ci->flag & VM_CALL_ARGS_BLOCKARG) ? GET_BLOCK_PTR() : 0;
-    //
-    //    //if (UNLIKELY(!(ci->flag & VM_CALL_ARGS_SKIP_SETUP))) {
-    //    //    vm_caller_setup_args(th, REG_CFP, ci);
-    //    //}
-    //    //ci->recv = GET_SELF();
-    //    //vm_search_super_method(th, GET_CFP(), ci);
-    //    //CALL_METHOD(ci);
-    //
+    //CALL_INFO ci = (CALL_INFO)GET_OPERAND(1);
+    trace_recorder_take_snapshot(rec, REG_PC);
+    //ci->argc = ci->orig_argc;
+    //ci->blockptr = !(ci->flag & VM_CALL_ARGS_BLOCKARG) ? GET_BLOCK_PTR() : 0;
+
+    //if (UNLIKELY(!(ci->flag & VM_CALL_ARGS_SKIP_SETUP))) {
+    //    vm_caller_setup_args(th, REG_CFP, ci);
+    //}
+    //ci->recv = GET_SELF();
+    //vm_search_super_method(th, GET_CFP(), ci);
+    //CALL_METHOD(ci);
+
     not_support_op(rec, e, "invokesuper");
 }
 
@@ -798,18 +801,18 @@ static void record_invokeblock(trace_recorder_t *rec, jit_event_t *e)
     //
     //    if ((type != ISEQ_TYPE_METHOD && type != ISEQ_TYPE_CLASS) || block == 0) {
     //        // "no block given (yield)"
-    //        TracerecorderAbort(rec, REG_CFP, REG_PC, TRACE_ERROR_THROW);
+    //        trace_recorder_abort(rec, e, TRACE_ERROR_THROW);
     //        return;
     //    }
     //
     //    if (UNLIKELY(ci->flag & VM_CALL_ARGS_SPLAT)) {
-    //        TracerecorderAbort(rec, REG_CFP, REG_PC, TRACE_ERROR_UNSUPPORT_OP);
+    //        trace_recorder_abort(rec, e, TRACE_ERROR_UNSUPPORT_OP);
     //        return;
     //    }
     //
     //    if (BUILTIN_TYPE(block->iseq) == T_NODE) {
     //        // yield native block
-    //        TracerecorderAbort(rec, REG_CFP, REG_PC, TRACE_ERROR_NATIVE_METHOD);
+    //        trace_recorder_abort(rec, e, TRACE_ERROR_NATIVE_METHOD);
     //        return;
     //    }
     //
@@ -829,34 +832,34 @@ static void record_invokeblock(trace_recorder_t *rec, jit_event_t *e)
 
 static void record_leave(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    lir_t Val;
-    //    if (VM_FRAME_TYPE_FINISH_P(reg_cfp)) {
-    //        TracerecorderAbort(rec, REG_CFP, REG_PC, TRACE_ERROR_LEAVE);
-    //        return;
-    //    }
-    //    if (rec->CallDepth == 0) {
-    //        TracerecorderAbort(rec, REG_CFP, REG_PC, TRACE_ERROR_LEAVE);
-    //        return;
-    //    }
-    //    rec->CallDepth -= 1;
-    //    Val = _POP();
-    //    PopCallStack(rec);
-    //
-    //    EmitIR(FramePop);
-    //    //EmitJump(rec, REG_PC, 0);
-    //    _PUSH(Val);
+    lir_t Val;
+    if (VM_FRAME_TYPE_FINISH_P(REG_CFP)) {
+	trace_recorder_abort(rec, e, TRACE_ERROR_LEAVE);
+	return;
+    }
+    if (basicblock_call_stack_size(rec->cur_bb) == 0) {
+	trace_recorder_abort(rec, e, TRACE_ERROR_LEAVE);
+	return;
+    }
+    Val = _POP();
+
+    EmitIR(FramePop);
+    EmitJump(rec, REG_PC, 0);
+    basicblock_call_stack_size(rec->cur_bb);
+    _PUSH(Val);
 }
 
 static void record_throw(trace_recorder_t *rec, jit_event_t *e)
 {
+    // unreachable
     not_support_op(rec, e, "throw");
 }
 
 static void record_jump(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    OFFSET dst = (OFFSET)GET_OPERAND(1);
-    //    VALUE *target_pc = reg_pc + insn_len(BIN(jump)) + dst;
-    //    EmitJump(rec, target_pc, 1);
+    OFFSET dst = (OFFSET)GET_OPERAND(1);
+    VALUE *target_pc = REG_PC + insn_len(BIN(jump)) + dst;
+    EmitJump(rec, target_pc, 1);
 }
 
 static void record_branchif(trace_recorder_t *rec, jit_event_t *e)
@@ -904,13 +907,13 @@ static void record_branchunless(trace_recorder_t *rec, jit_event_t *e)
 
 static void record_getinlinecache(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    IC ic = (IC)GET_OPERAND(2);
-    //    if (ic->ic_serial != GET_GLOBAL_CONSTANT_STATE()) {
-    //        // hmm, constant value is re-defined.
-    //        not_support_op(rec, e, "getinlinecache");
-    //        return;
-    //    }
-    //    _PUSH(EmitLoadConst(rec, ic->ic_value.value));
+    IC ic = (IC)GET_OPERAND(2);
+    if (ic->ic_serial != GET_GLOBAL_CONSTANT_STATE()) {
+	// hmm, constant value is re-defined.
+	not_support_op(rec, e, "getinlinecache");
+	return;
+    }
+    _PUSH(EmitLoadConst(rec, ic->ic_value.value));
 }
 
 static void record_setinlinecache(trace_recorder_t *rec, jit_event_t *e)
@@ -920,78 +923,76 @@ static void record_setinlinecache(trace_recorder_t *rec, jit_event_t *e)
 
 static void record_once(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    IC ic = (IC)GET_OPERAND(2);
-    //    //ISEQ iseq = (ISEQ)GET_OPERAND(1);
-    //    union iseq_inline_storage_entry *is = (union iseq_inline_storage_entry *)ic;
-    //
-    //    if (is->once.done == Qfalse) {
-    //        not_support_op(rec, e, "once");
-    //    } else {
-    //        _PUSH(EmitLoadConst(rec, is->once.value));
-    //    }
+    IC ic = (IC)GET_OPERAND(2);
+    //ISEQ iseq = (ISEQ)GET_OPERAND(1);
+    union iseq_inline_storage_entry *is = (union iseq_inline_storage_entry *)ic;
+
+    if (is->once.done == Qfalse) {
+	not_support_op(rec, e, "once");
+    }
+    else {
+	_PUSH(EmitLoadConst(rec, is->once.value));
+    }
 }
 
 static void record_opt_case_dispatch(trace_recorder_t *rec, jit_event_t *e)
 {
-    //  lir_t Rkey = _POP();
-    //  OFFSET else_offset = (OFFSET)GET_OPERAND(2);
-    //  CDHASH hash = (CDHASH)GET_OPERAND(1);
-    //  VALUE key = TOPN(0);
-    //
-    //  trace_recorder_take_snapshot(rec, REG_PC);
-    //  int type = TYPE(key);
-    //  switch(type) {
-    //    case T_FLOAT: {
-    //      // FIXME
-    //      not_support_op(rec, e, "opt_case_dispatch");
-    //      //double ival;
-    //      //if (modf(RFLOAT_VALUE(key), &ival) == 0.0) {
-    //      //  key = FIXABLE(ival) ? LONG2FIX((long)ival) : rb_dbl2big(ival);
-    //      //}
-    //    }
-    //    case T_SYMBOL: /* fall through */
-    //    case T_FIXNUM:
-    //    case T_BIGNUM:
-    //    case T_STRING:
-    //      if (BASIC_OP_UNREDEFINED_P(BOP_EQQ,
-    //                                 SYMBOL_REDEFINED_OP_FLAG |
-    //                                 FIXNUM_REDEFINED_OP_FLAG |
-    //                                 BIGNUM_REDEFINED_OP_FLAG |
-    //                                 STRING_REDEFINED_OP_FLAG)) {
-    //        if (type == T_SYMBOL) {
-    //          EmitIR(GuardTypeSymbol, REG_PC, Rkey);
-    //          EmitIR(GuardMethodRedefine, REG_PC, SYMBOL_REDEFINED_OP_FLAG, BOP_EQQ);
-    //        }
-    //        else if (type == T_FIXNUM) {
-    //          EmitIR(GuardTypeFixnum, REG_PC, Rkey);
-    //          EmitIR(GuardMethodRedefine, REG_PC, FIXNUM_REDEFINED_OP_FLAG, BOP_EQQ);
-    //        }
-    //        else if (type == T_BIGNUM) {
-    //          EmitIR(GuardTypeBignum, REG_PC, Rkey);
-    //          EmitIR(GuardMethodRedefine, REG_PC, BIGNUM_REDEFINED_OP_FLAG, BOP_EQQ);
-    //        }
-    //        else if (type == T_STRING) {
-    //          EmitIR(GuardTypeString, REG_PC, Rkey);
-    //          EmitIR(GuardMethodRedefine, REG_PC, STRING_REDEFINED_OP_FLAG, BOP_EQQ);
-    //        }
-    //        st_data_t val;
-    //        // We assume `hash` is constant variable
-    //        if (st_lookup(RHASH_TBL_RAW(hash), key, &val)) {
-    //          VALUE *dst = reg_pc + insn_len(BIN(opt_case_dispatch))
-    //              + FIX2INT((VALUE)val);
-    //          EmitJump(rec, dst, 1);
-    //        }
-    //        else {
-    //          VALUE *dst = reg_pc + insn_len(BIN(opt_case_dispatch))
-    //              + else_offset;
-    //          JUMP(else_offset);
-    //          EmitJump(rec, dst, 1);
-    //        }
-    //        break;
-    //      }
-    //    default:
-    //      break;
-    //  }
+    lir_t Rkey = _POP();
+    OFFSET else_offset = (OFFSET)GET_OPERAND(2);
+    CDHASH hash = (CDHASH)GET_OPERAND(1);
+    VALUE key = TOPN(0);
+
+    trace_recorder_take_snapshot(rec, REG_PC);
+    int type = TYPE(key);
+    switch (type) {
+	case T_FLOAT: {
+	    // FIXME
+	    not_support_op(rec, e, "opt_case_dispatch");
+	    //double ival;
+	    //if (modf(RFLOAT_VALUE(key), &ival) == 0.0) {
+	    //  key = FIXABLE(ival) ? LONG2FIX((long)ival) : rb_dbl2big(ival);
+	    //}
+	}
+	case T_SYMBOL: /* fall through */
+	case T_FIXNUM:
+	case T_BIGNUM:
+	case T_STRING:
+	    if (BASIC_OP_UNREDEFINED_P(BOP_EQQ,
+	                               SYMBOL_REDEFINED_OP_FLAG | FIXNUM_REDEFINED_OP_FLAG | BIGNUM_REDEFINED_OP_FLAG | STRING_REDEFINED_OP_FLAG)) {
+		if (type == T_SYMBOL) {
+		    EmitIR(GuardTypeSymbol, REG_PC, Rkey);
+		    EmitIR(GuardMethodRedefine, REG_PC, SYMBOL_REDEFINED_OP_FLAG, BOP_EQQ);
+		}
+		else if (type == T_FIXNUM) {
+		    EmitIR(GuardTypeFixnum, REG_PC, Rkey);
+		    EmitIR(GuardMethodRedefine, REG_PC, FIXNUM_REDEFINED_OP_FLAG, BOP_EQQ);
+		}
+		else if (type == T_BIGNUM) {
+		    EmitIR(GuardTypeBignum, REG_PC, Rkey);
+		    EmitIR(GuardMethodRedefine, REG_PC, BIGNUM_REDEFINED_OP_FLAG, BOP_EQQ);
+		}
+		else if (type == T_STRING) {
+		    EmitIR(GuardTypeString, REG_PC, Rkey);
+		    EmitIR(GuardMethodRedefine, REG_PC, STRING_REDEFINED_OP_FLAG, BOP_EQQ);
+		}
+		st_data_t val;
+		// We assume `hash` is constant variable
+		if (st_lookup(RHASH_TBL_RAW(hash), key, &val)) {
+		    VALUE *dst = REG_PC + insn_len(BIN(opt_case_dispatch))
+		                 + FIX2INT((VALUE)val);
+		    EmitJump(rec, dst, 1);
+		}
+		else {
+		    VALUE *dst = REG_PC + insn_len(BIN(opt_case_dispatch))
+		                 + else_offset;
+		    JUMP(else_offset);
+		    EmitJump(rec, dst, 1);
+		}
+		break;
+	    }
+	default:
+	    break;
+    }
 }
 
 static void record_opt_plus(trace_recorder_t *rec, jit_event_t *e)

@@ -21,6 +21,14 @@ struct rb_vm_global_state {
     short *_ruby_vm_redefined_flag;
 };
 
+typedef struct jit_runtime_struct {
+    short *redefined_flag;
+    rb_serial_t *global_method_state;
+    rb_serial_t *global_constant_state;
+    rb_serial_t *class_serial;
+} jit_runtime_t;
+extern jit_runtime_t jit_runtime;
+
 enum JIT_BOP {
     JIT_BOP_PLUS = BOP_PLUS,
     JIT_BOP_MINUS = BOP_MINUS,

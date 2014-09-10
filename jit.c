@@ -66,6 +66,7 @@ static int vm_load_cache(VALUE obj, ID id, IC ic, rb_call_info_t *ci, int is_att
 
 // rujit
 static int disable_jit = 0;
+jit_runtime_t jit_runtime = {};
 
 typedef struct rb_jit_t rb_jit_t;
 
@@ -607,6 +608,14 @@ static void basicblock_set_callstack(struct memory_pool *mpool, basicblock_t *bb
     }
 }
 
+static int basicblock_call_stack_size(basicblock_t *bb)
+{
+    if (bb->call_stack == NULL) {
+	return 0;
+    }
+    return bb->call_stack->list.size;
+}
+
 static lir_t basicblock_get(basicblock_t *bb, int i)
 {
     return (lir_t)jit_list_get(&bb->insts, i);
@@ -1032,6 +1041,10 @@ static void jit_global_default_params_setup(struct rb_vm_global_state *global_st
 	    jit_vm_redefined_flag[i] = global_state_ptr->_ruby_vm_redefined_flag[i];
 	}
     }
+    jit_runtime.redefined_flag = jit_vm_redefined_flag;
+    jit_runtime.global_method_state = global_state_ptr->_global_method_state;
+    jit_runtime.global_constant_state = global_state_ptr->_global_constant_state;
+    jit_runtime.class_serial = global_state_ptr->_class_serial;
 }
 
 static void jit_default_params_setup(rb_jit_t *jit)
