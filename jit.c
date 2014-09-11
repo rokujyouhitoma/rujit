@@ -28,6 +28,14 @@
 // static const char cmd_template[];
 #include "jit_cgen_cmd.h"
 
+#define LOG(MSG, ...)                    \
+    fprintf(stderr, MSG, ##__VA_ARGS__); \
+    fprintf(stderr, "\n")
+#define RC_INC(O) ((O)->refc++)
+#define RC_DEC(O) (--(O)->refc)
+#define RC_INIT(O) ((O)->refc = 1)
+#define RC_CHECK0(O) ((O)->refc == 0)
+
 // imported api from ruby-core
 extern void vm_search_method(rb_call_info_t *ci, VALUE recv);
 extern VALUE rb_f_block_given_p(void);
@@ -97,6 +105,7 @@ typedef struct const_pool {
 
 typedef struct regstack {
     jit_list_t list;
+    unsigned refc;
 } regstack_t;
 
 typedef struct call_stack {
@@ -131,11 +140,13 @@ struct jit_trace {
     const rb_iseq_t *iseq;
     long counter;
     void *handler;
+    hashmap_t *side_exit;
     const_pool_t cpool;
 };
 
 struct trace_side_exit_handler {
     trace_t *this_trace;
+    trace_t *child_trace;
     VALUE *exit_pc;
 };
 
@@ -253,6 +264,9 @@ static lir_t Emit_Exit(trace_recorder_t *rec, VALUE *target_pc);
 static int lir_is_terminator(lir_inst_t *inst);
 static int lir_is_guard(lir_inst_t *inst);
 static int elimnate_guard(trace_recorder_t *rec, lir_inst_t *inst);
+static void trace_optimize(trace_recorder_t *rec, trace_t *trace);
+static void trace_compile(trace_recorder_t *rec, trace_t *trace);
+static void trace_link(trace_recorder_t *rec, trace_t *trace);
 
 static rb_jit_t *current_jit = NULL;
 static VALUE rb_cMath;
@@ -604,6 +618,7 @@ static void basicblock_swap_inst(basicblock_t *bb, int idx1, int idx2)
 static void basicblock_append(basicblock_t *bb, lir_inst_t *inst)
 {
     jit_list_add(&bb->insts, (uintptr_t)inst);
+    inst->parent = bb;
 }
 
 static lir_t basicblock_get_terminator(basicblock_t *bb)
@@ -652,6 +667,7 @@ static regstack_t *regstack_init(regstack_t *stack)
     for (i = 0; i < LIR_RESERVED_REGSTACK_SIZE; i++) {
 	jit_list_add(&stack->list, 0);
     }
+    RC_INIT(stack);
     return stack;
 }
 
@@ -738,6 +754,8 @@ static lir_t regstack_top(regstack_t *stack, int n)
 
 static void regstack_delete(regstack_t *stack)
 {
+    RC_DEC(stack);
+    assert(RC_CHECK0(stack));
     jit_list_delete(&stack->list);
 }
 /* } regstack */
@@ -900,10 +918,15 @@ static void trace_recorder_clear(trace_recorder_t *rec, trace_t *trace, int allo
     hashmap_init(&rec->stack_map, 1);
 }
 
+static int trace_recorder_inst_size(trace_recorder_t *recorder)
+{
+    return recorder->last_inst_id;
+}
+
 static int trace_recorder_is_full(trace_recorder_t *recorder)
 {
     /*reserve one instruction for EXIT */
-    return recorder->last_inst_id - 2 == LIR_MAX_TRACE_LENGTH;
+    return trace_recorder_inst_size(recorder) - 2 == LIR_MAX_TRACE_LENGTH;
 }
 
 static lir_t trace_recorder_get_const(trace_recorder_t *recorder, VALUE value)
@@ -950,11 +973,64 @@ static basicblock_t *trace_recorder_get_block(trace_recorder_t *rec, VALUE *pc)
     return NULL;
 }
 
-static void compile_trace(rb_jit_t *jit, trace_recorder_t *recorder)
+/* trace { */
+static trace_t *trace_new(jit_event_t *e, trace_side_exit_handler_t *parent)
 {
-    fprintf(stderr, "compiled\n");
-    dump_trace(recorder);
-    asm volatile("int3");
+    rb_control_frame_t *reg_cfp = e->cfp;
+    trace_t *trace = (trace_t *)malloc(sizeof(*trace));
+    memset(trace, 0, sizeof(*trace));
+    trace->start_pc = e->pc;
+    trace->parent = parent;
+    trace->iseq = GET_ISEQ();
+    const_pool_init(&trace->cpool);
+    return trace;
+}
+
+static void trace_delete(trace_t *trace)
+{
+    const_pool_delete(&trace->cpool);
+    free(trace);
+}
+
+static int trace_is_compiled(trace_t *trace)
+{
+    return trace && trace->handler && trace->code;
+}
+
+static void trace_add_child(trace_t *trace, trace_t *child)
+{
+    if (trace->side_exit == NULL) {
+	trace->side_exit = (hashmap_t *)malloc(sizeof(hashmap_t));
+	hashmap_init(trace->side_exit, 1);
+    }
+    hashmap_set(trace->side_exit, (hashmap_data_t)child, (hashmap_data_t)child);
+}
+
+static void trace_link(trace_recorder_t *rec, trace_t *trace)
+{
+    trace_side_exit_handler_t *parent = trace->parent;
+    if (parent) {
+	if (trace_is_compiled(trace)) {
+	    LOG("link trace. parent=%p, child=%p", parent, trace);
+	    parent->child_trace = trace;
+	    trace_add_child(parent->this_trace, trace);
+	}
+    }
+}
+/* } trace */
+
+static void compile_trace(rb_jit_t *jit, trace_recorder_t *rec)
+{
+    dump_trace(rec);
+    if (trace_recorder_inst_size(rec) > LIR_MIN_TRACE_LENGTH) {
+	trace_t *trace = jit->current_trace;
+	trace_optimize(rec, trace);
+	dump_trace(rec);
+	trace_compile(rec, trace);
+	trace_link(rec, trace);
+    }
+    rec->trace = NULL;
+    trace_recorder_clear(rec, NULL, 0);
 }
 
 static void trace_recorder_abort(trace_recorder_t *rec, jit_event_t *e, enum trace_error_state reason)
@@ -1165,13 +1241,7 @@ static void stop_recording(rb_jit_t *jit)
 
 static trace_t *create_new_trace(rb_jit_t *jit, jit_event_t *e, trace_side_exit_handler_t *parent)
 {
-    rb_control_frame_t *reg_cfp = e->cfp;
-    trace_t *trace = (trace_t *)malloc(sizeof(*trace));
-    memset(trace, 0, sizeof(*trace));
-    trace->start_pc = e->pc;
-    trace->parent = parent;
-    trace->iseq = GET_ISEQ();
-    const_pool_init(&trace->cpool);
+    trace_t *trace = trace_new(e, parent);
     if (!parent) {
 	hashmap_set(&jit->traces, (hashmap_data_t)e->pc, (hashmap_data_t)trace);
     }
@@ -1195,11 +1265,6 @@ static int is_backward_branch(jit_event_t *e, VALUE **target_pc_ptr)
     return dst < 0;
 }
 
-static int is_compiled_trace(trace_t *trace)
-{
-    return trace && trace->handler && trace->code;
-}
-
 static int already_recorded_on_trace(jit_event_t *e)
 {
     rb_jit_t *jit = current_jit;
@@ -1216,7 +1281,7 @@ static int already_recorded_on_trace(jit_event_t *e)
 	// TODO formed loop.
 	return 1;
     }
-    else if ((trace = find_trace(jit, e)) != NULL && is_compiled_trace(trace)) {
+    else if ((trace = find_trace(jit, e)) != NULL && trace_is_compiled(trace)) {
 	// linked to other trace
 	// TODO emit exit
 	return 1;
@@ -1305,9 +1370,9 @@ static VALUE *trace_selection(rb_jit_t *jit, jit_event_t *e)
     VALUE *target_pc = NULL;
     if (is_recording(jit)) {
 	if (is_end_of_trace(jit->recorder, e)) {
-	    stop_recording(jit);
 	    record_insn(jit->recorder, e);
 	    compile_trace(jit, jit->recorder);
+	    stop_recording(jit);
 	}
 	else {
 	    record_insn(jit->recorder, e);
@@ -1315,7 +1380,7 @@ static VALUE *trace_selection(rb_jit_t *jit, jit_event_t *e)
 	return e->pc;
     }
     trace = find_trace(jit, e);
-    if (is_compiled_trace(trace)) {
+    if (trace_is_compiled(trace)) {
 	return trace_invoke(jit, e, trace);
     }
     if (is_backward_branch(e, &target_pc)) {

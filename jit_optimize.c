@@ -362,7 +362,7 @@ static lir_inst_t *constant_fold_inst(trace_recorder_t *rec, lir_inst_t *inst)
 	return inst;
     }
     if (is_constant(inst)) {
-	return add_const_pool(rec, inst);
+	return inst;
     }
     folder = const_fold_funcs[lir_opcode(inst)];
     if (folder == NULL) {
@@ -477,6 +477,7 @@ static void worklist_init(worklist_t *list, jit_list_t *blocks, trace_recorder_t
 	basicblock_t *block = (basicblock_t *)jit_list_get(blocks, j);
 	for (i = 0; i < block->insts.size; i++) {
 	    lir_inst_t *inst = basicblock_get(block, i);
+	    assert(inst != NULL);
 	    worklist_push(list, inst);
 	}
     }

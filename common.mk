@@ -854,6 +854,7 @@ jit.$(OBJEXT): {$(VPATH)}jit.c {$(VPATH)}jit_opts.h \
 	{$(VPATH)}jit_hashmap.c \
 	{$(VPATH)}jit_record.c \
 	{$(VPATH)}jit_codegen.c \
+	{$(VPATH)}jit_optimize.c \
 	{$(VPATH)}jit_cgen_cmd.h \
 	{$(VPATH)}lir.c {$(VPATH)}yarv2lir.c
 	@$(ECHO) compiling $<

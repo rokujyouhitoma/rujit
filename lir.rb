@@ -24,7 +24,7 @@ class OP
     @variadic = false
     @opcode = opcode
     @side_effect = side_effect
-    @termnator = terminator
+    @terminator = terminator
     parse_arg(arg)
   end
 
