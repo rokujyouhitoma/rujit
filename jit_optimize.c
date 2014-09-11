@@ -13,56 +13,6 @@ static lir_t EmitLoadConst(trace_recorder_t *rec, VALUE val);
 typedef VALUE (*lir_folder1_t)(VALUE);
 typedef VALUE (*lir_folder2_t)(VALUE, VALUE);
 
-static int lir_opcode(lir_inst_t *inst)
-{
-    return inst->opcode;
-}
-
-static lir_inst_t **lir_inst_get_args(lir_inst_t *inst, int idx)
-{
-#define GET_ARG(OPNAME)    \
-    case OPCODE_I##OPNAME: \
-	return GetNext_##OPNAME(inst, idx);
-
-    switch (lir_opcode(inst)) {
-	LIR_EACH(GET_ARG);
-	default:
-	    assert(0 && "unreachable");
-    }
-#undef GET_ARG
-    return NULL;
-}
-
-static void lir_inst_adduser(trace_recorder_t *rec, lir_inst_t *inst, lir_inst_t *ir)
-{
-    if (inst->user == NULL) {
-	inst->user = (jit_list_t *)memory_pool_alloc(&rec->mpool, sizeof(jit_list_t));
-	jit_list_init(inst->user);
-    }
-    jit_list_add(inst->user, (uintptr_t)ir);
-}
-
-static void lir_inst_removeuser(lir_inst_t *inst, lir_inst_t *ir)
-{
-    if (inst->user == NULL) {
-	return;
-    }
-    jit_list_remove(inst->user, (uintptr_t)ir);
-}
-
-static void update_userinfo(trace_recorder_t *rec, lir_inst_t *inst)
-{
-    lir_inst_t **ref = NULL;
-    int i = 0;
-    while ((ref = lir_inst_get_args(inst, i)) != NULL) {
-	lir_inst_t *user = *ref;
-	if (user) {
-	    lir_inst_adduser(rec, user, inst);
-	}
-	i += 1;
-    }
-}
-
 static void lir_inst_replace_with(trace_recorder_t *rec, lir_inst_t *inst, lir_inst_t *newinst)
 {
     unsigned i;
@@ -147,7 +97,7 @@ static int is_constant(lir_inst_t *inst)
 static int elimnate_guard(trace_recorder_t *rec, lir_inst_t *inst)
 {
     /* Remove guard that always true
-     * If we think following code, L2 is always true. So we can remove L2.
+     * e.g.) L2 is always true becuase L1 is fixnum. So we can remove L2.
      * L1 = LoadConstFixnum 10
      * L2 = GuardTypeFixnum L1 exit_pc
      */

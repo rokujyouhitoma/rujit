@@ -504,11 +504,9 @@ static void jit_list_delete(jit_list_t *self)
 	self->size = self->capacity = 0;
     }
 }
-
 /* } jit_list */
 
 /* const pool { */
-
 #define CONST_POOL_INIT_SIZE 1
 static const_pool_t *const_pool_init(const_pool_t *self)
 {
@@ -520,13 +518,6 @@ static const_pool_t *const_pool_init(const_pool_t *self)
 static int const_pool_contain(const_pool_t *self, const void *ptr)
 {
     return jit_list_indexof(&self->list, (uintptr_t)ptr);
-    unsigned i;
-    for (i = 0; i < self->list.size; i++) {
-	if (self->list.list[i] == (uintptr_t)ptr) {
-	    return i;
-	}
-    }
-    return -1;
 }
 
 static int const_pool_add(const_pool_t *self, const void *ptr, lir_t val)
@@ -708,6 +699,7 @@ static regstack_t *regstack_clone(struct memory_pool *mpool, regstack_t *old)
     unsigned i;
     regstack_t *stack = regstack_new(mpool);
     jit_list_ensure(&stack->list, old->list.size);
+    stack->list.size = 0;
     for (i = 0; i < old->list.size; i++) {
 	jit_list_add(&stack->list, jit_list_get(&old->list, i));
     }
@@ -986,9 +978,26 @@ static trace_t *trace_new(jit_event_t *e, trace_side_exit_handler_t *parent)
     return trace;
 }
 
+static void trace_delete(trace_t *trace);
+static void trace_reset(trace_t *trace)
+{
+    if (trace->side_exit) {
+	hashmap_dispose(trace->side_exit, (hashmap_entry_destructor_t)trace_delete);
+	trace->side_exit = NULL;
+    }
+    const_pool_delete(&trace->cpool);
+    const_pool_init(&trace->cpool);
+    trace->counter = 0;
+}
+
 static void trace_delete(trace_t *trace)
 {
+    if (trace->side_exit) {
+	hashmap_dispose(trace->side_exit, (hashmap_entry_destructor_t)trace_delete);
+	trace->side_exit = NULL;
+    }
     const_pool_delete(&trace->cpool);
+    trace->counter = 0;
     free(trace);
 }
 
@@ -1097,6 +1106,7 @@ static int peephole(trace_recorder_t *rec, lir_inst_t *inst)
 
 static lir_inst_t *constant_fold_inst(trace_recorder_t *recorder, lir_inst_t *inst);
 
+static void update_userinfo(trace_recorder_t *rec, lir_inst_t *inst);
 static void dump_lir_inst(lir_inst_t *inst);
 
 static lir_inst_t *trace_recorder_add_inst(trace_recorder_t *recorder, lir_inst_t *inst, unsigned inst_size)
@@ -1114,7 +1124,7 @@ static lir_inst_t *trace_recorder_add_inst(trace_recorder_t *recorder, lir_inst_
     if (DUMP_LIR) {
 	dump_lir_inst(newinst);
     }
-    //update_userinfo(Rec, buf);
+    update_userinfo(recorder, newinst);
     return newinst;
 }
 
@@ -1358,10 +1368,6 @@ static int is_end_of_trace(trace_recorder_t *recorder, jit_event_t *e)
     return 0;
 }
 
-static void trace_reset(trace_t *trace, int alloc_memory)
-{
-}
-
 static void record_insn(trace_recorder_t *ecorder, jit_event_t *e);
 
 static VALUE *trace_selection(rb_jit_t *jit, jit_event_t *e)
@@ -1393,7 +1399,7 @@ static VALUE *trace_selection(rb_jit_t *jit, jit_event_t *e)
 	trace->counter += 1;
 	if (trace->counter > HOT_TRACE_THRESHOLD) {
 	    set_recording(jit, trace);
-	    trace_reset(trace, 1);
+	    trace_reset(trace);
 	    trace_recorder_clear(jit->recorder, trace, 1);
 	    record_insn(jit->recorder, e);
 	}
@@ -1484,6 +1490,56 @@ static int lir_is_guard(lir_inst_t *inst)
 #undef IS_TERMINATOR
     }
     return 0;
+}
+
+static int lir_opcode(lir_inst_t *inst)
+{
+    return inst->opcode;
+}
+
+static lir_inst_t **lir_inst_get_args(lir_inst_t *inst, int idx)
+{
+#define GET_ARG(OPNAME)    \
+    case OPCODE_I##OPNAME: \
+	return GetNext_##OPNAME(inst, idx);
+
+    switch (lir_opcode(inst)) {
+	LIR_EACH(GET_ARG);
+	default:
+	    assert(0 && "unreachable");
+    }
+#undef GET_ARG
+    return NULL;
+}
+
+static void lir_inst_adduser(trace_recorder_t *rec, lir_inst_t *inst, lir_inst_t *ir)
+{
+    if (inst->user == NULL) {
+	inst->user = (jit_list_t *)memory_pool_alloc(&rec->mpool, sizeof(jit_list_t));
+	jit_list_init(inst->user);
+    }
+    jit_list_add(inst->user, (uintptr_t)ir);
+}
+
+static void lir_inst_removeuser(lir_inst_t *inst, lir_inst_t *ir)
+{
+    if (inst->user == NULL) {
+	return;
+    }
+    jit_list_remove(inst->user, (uintptr_t)ir);
+}
+
+static void update_userinfo(trace_recorder_t *rec, lir_inst_t *inst)
+{
+    lir_inst_t **ref = NULL;
+    int i = 0;
+    while ((ref = lir_inst_get_args(inst, i)) != NULL) {
+	lir_inst_t *user = *ref;
+	if (user) {
+	    lir_inst_adduser(rec, user, inst);
+	}
+	i += 1;
+    }
 }
 
 static void dump_lir_inst(lir_inst_t *inst)

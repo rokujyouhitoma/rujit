@@ -33,10 +33,10 @@ static int buffer_printf(buffer_t *buf, const char *fmt, va_list ap)
 {
     unsigned size = buf->buf.size;
     unsigned capacity = buf->buf.capacity * sizeof(uintptr_t);
-    char *ptr = (char *)buf->buf.list + size;
+    char *ptr = ((char *)buf->buf.list) + size;
     size_t n = vsnprintf(ptr, capacity - size, fmt, ap);
     if (n + size < capacity) {
-	buf->buf.size += size;
+	buf->buf.size += n;
 	return 1;
     }
     else {
@@ -168,7 +168,7 @@ static void *cgen_get_function(CGen *gen, const char *fname, trace_t *trace)
 
 static long get_sideexit_id(hashmap_t *sideexits, VALUE *pc)
 {
-    return -1;
+    return hashmap_get(sideexits, (hashmap_data_t)pc);
 }
 
 #define EMIT_CODE(GEN, OP, VAL, LHS, RHS)                         \
@@ -179,9 +179,7 @@ static long get_sideexit_id(hashmap_t *sideexits, VALUE *pc)
     cgen_printf(gen, "v%ld = rb_jit_exec_" #OP "(v%ld);\n", \
                 (VAL), lir_getid(ARG))
 
-static void TranslateLIR2C(trace_recorder_t *Rec, CGen *gen,
-                           hashmap_t *SideExitBBs,
-                           lir_inst_t *Inst)
+static void compile_inst(trace_recorder_t *Rec, CGen *gen, hashmap_t *SideExitBBs, lir_inst_t *Inst)
 {
     long Id = lir_getid(Inst);
     switch (lir_opcode(Inst)) {
@@ -1112,7 +1110,135 @@ static void TranslateLIR2C(trace_recorder_t *Rec, CGen *gen,
     }
 }
 
+static void prepare_side_exit(trace_recorder_t *rec, CGen *gen, hashmap_t *SideExitBBs)
+{
+    long j = 1;
+    hashmap_iterator_t itr = { 0, 0 };
+    hashmap_init(SideExitBBs, hashmap_size(&rec->stack_map));
+    while (hashmap_next(&rec->stack_map, &itr)) {
+	VALUE *pc = (VALUE *)itr.entry->key;
+	hashmap_set(SideExitBBs, (hashmap_data_t)pc, (j << 1));
+	cgen_printf(gen,
+	            "static TraceSideExitHandler side_exit_handler_%ld = {\n"
+	            " .exit_pc = (VALUE *) %p,\n"
+	            " .this_trace = 0,\n"
+	            " .child_trace = 0\n"
+	            "};\n",
+	            j, pc);
+	j++;
+    }
+}
+
+static void compile_prologue(trace_recorder_t *rec, trace_t *trace, hashmap_t *SideExitBBs, CGen *gen, int fid)
+{
+    hashmap_iterator_t itr = { 0, 0 };
+    cgen_printf(gen,
+                "#include \"ruby_jit.h\"\n"
+                "#include <assert.h>\n"
+                "#include <dlfcn.h>\n"
+                "#define BLOCK_LABEL(label) L_##label:;(void)&&L_##label;\n"
+                "const gwjit_context_t *jit_context = NULL;\n");
+
+    if (JIT_DUMP_COMPILE_LOG > 0) {
+	const rb_iseq_t *iseq = trace->iseq;
+	VALUE file = iseq->location.path;
+	cgen_printf(gen,
+	            "// This code is translated from file=%s line=%d\n",
+	            RSTRING_PTR(file),
+	            rb_iseq_line_no(iseq,
+	                            trace->start_pc - iseq->iseq_encoded));
+    }
+
+    prepare_side_exit(rec, gen, SideExitBBs);
+
+    cgen_printf(gen,
+                "void init_gwjit_%d(const gwjit_context_t *ctx, struct trace_t *t)"
+                "{\n"
+                "  jit_context = ctx;\n"
+                "  (void) make_no_method_exception;\n"
+                //"  (void) jit_vm_call_iseq_setup_normal;\n"
+                //"  (void) jit_vm_yield_setup_block_args;\n"
+                ,
+                fid);
+
+    while (hashmap_next(SideExitBBs, &itr)) {
+	long id = ((long)itr.entry->val) >> 1;
+	cgen_printf(gen, "  side_exit_handler_%ld.this_trace = t;\n", id);
+    }
+    cgen_printf(gen, "}\n");
+
+    cgen_printf(gen, "TraceSideExitHandler *gwjit_%d(rb_thread_t *th,\n"
+                     "    rb_control_frame_t *reg_cfp)\n"
+                     "{\n"
+                     "  VALUE *original_sp = GET_SP();\n"
+                     "  rb_control_frame_t *original_cfp = reg_cfp;\n",
+                fid);
+}
+
+static void compile_epilogue(trace_t *trace, CGen *gen)
+{
+}
+
+static void compile2c(trace_recorder_t *rec, CGen *gen, trace_t *trace, int fid)
+{
+    unsigned i, j;
+    hashmap_t SideExitBBs;
+    hashmap_iterator_t itr = { 0, 0 };
+    compile_prologue(rec, trace, &SideExitBBs, gen, fid);
+    for (i = 0; i < rec->bblist.size; i++) {
+	basicblock_t *bb = (basicblock_t *)jit_list_get(&rec->bblist, i);
+	for (j = 0; j < bb->insts.size; j++) {
+	    lir_inst_t *inst = (lir_inst_t *)bb->insts.list[j];
+	    if (lir_inst_define_value(lir_opcode(inst))) {
+		long Id = lir_getid(inst);
+		cgen_printf(gen, "VALUE v%ld = 0;\n", Id);
+	    }
+	}
+    }
+
+    for (i = 0; i < rec->bblist.size; i++) {
+	basicblock_t *bb = (basicblock_t *)jit_list_get(&rec->bblist, i);
+	cgen_printf(gen, "BLOCK_LABEL(%u);\n", bb->base.id);
+	for (j = 0; j < bb->insts.size; j++) {
+	    lir_inst_t *inst = (lir_inst_t *)bb->insts.list[j];
+	    compile_inst(rec, gen, &SideExitBBs, inst);
+	}
+    }
+
+    cgen_printf(gen, "}\n");
+    compile_epilogue(trace, gen);
+    hashmap_dispose(&SideExitBBs, 0);
+}
+
 static void trace_compile(trace_recorder_t *rec, trace_t *trace)
 {
+    static int serial_id = 0;
+    char path[128] = {};
+    char fname[128] = {};
+    CGen gen;
+    int id = serial_id++;
+
+    assert(serial_id < 100 && "too many compiled trace");
+    if (id == 0) {
+	//gwjit_context_init();
+    }
+
+    snprintf(fname, 128, "gwjit_%d", id);
+    snprintf(path, 128, "/tmp/gwjit.%d.%d.dylib", (unsigned)getpid(), id);
+
+    cgen_open(&gen, FILE_MODE, path, id);
+
+    compile2c(rec, &gen, trace, id);
+    if (cgen_freeze(&gen, id) != 0) {
+	//trace->Code = (void *) 0xdeadbeaf;
+    }
+    else {
+	cgen_get_function(&gen, fname, trace);
+	if (trace->code) {
+	    //trace_freeze(Rec, trace);
+	    //FreezeInlineCache(&Rec->CacheMng);
+	}
+    }
     asm volatile("int3");
+    cgen_close(&gen);
 }

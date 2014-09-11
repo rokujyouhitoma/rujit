@@ -36,10 +36,10 @@ source_path = File.realpath(source_dir)
 header_paths = "-I#{target_path}"
 header_paths += " -I#{source_path}"
 header_paths += " -I#{target_path}/.ext/include/#{arch}/"
-header_paths += " -I#{source_path}/include/ -I#{source_path}"
+header_paths += " -I#{source_path}/include/"
 
 cmd = "#{cc} -pipe -O#{opt} -g#{debug} -x c-header #{header_paths} \
-#{source_path}/jit/ruby_jit.h -o #{target_path}/ruby_jit.h.pch"
+#{source_path}/ruby_jit.h -o #{target_path}/ruby_jit.h.pch"
 #puts cmd
 `#{cmd}`
 
@@ -47,7 +47,7 @@ path = File.join(target_path, 'ruby_jit.h.pch')
 
 print "static const char cmd_template[] = "
 print "\"#{cc} -pipe -fPIC -O#{opt} -g#{debug} -x c #{header_paths}"
-print " -I#{source_path}/jit/"
+print " -I#{source_path}"
 if cc == "clang"
   print " -include-pch #{path}"
 end
