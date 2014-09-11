@@ -328,7 +328,7 @@ static void compile_inst(trace_recorder_t *Rec, CGen *gen, hashmap_t *SideExitBB
 	    long exit_block_id = get_sideexit_id(SideExitBBs, ir->Exit);
 	    if (ir->is_attr) {
 		CALL_INFO ci = (CALL_INFO)ir->cache;
-		cgen_printf(gen, "if(!(%ld > 0)) {\n"
+		cgen_printf(gen, "if(!(%d > 0)) {\n"
 		                 "  goto L_exit%ld;\n"
 		                 "}\n",
 		            ci->aux.index, exit_block_id);
