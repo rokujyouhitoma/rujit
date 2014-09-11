@@ -37,9 +37,9 @@ static void lir_inst_replace_with(trace_recorder_t *rec, lir_inst_t *inst, lir_i
     // 2. replace side exit
     while (hashmap_next(&rec->stack_map, &itr)) {
 	regstack_t *stack = (regstack_t *)itr.entry->val;
-	for (j = 0; j < stack->list.size; j++) {
-	    if (inst == regstack_get_direct(stack, j)) {
-		regstack_set_direct(stack, j, newinst);
+	for (i = 0; i < stack->list.size; i++) {
+	    if (inst == regstack_get_direct(stack, i)) {
+		regstack_set_direct(stack, i, newinst);
 	    }
 	}
     }
@@ -294,8 +294,6 @@ static lir_inst_t *fold_string_add(trace_recorder_t *rec, lir_folder_t folder, l
 static lir_inst_t *add_const_pool(trace_recorder_t *rec, lir_inst_t *inst)
 {
     VALUE val;
-    trace_t *trace;
-    unsigned i;
     if (lir_opcode(inst) == OPCODE_ILoadConstNil) {
 	val = Qnil;
     }
@@ -474,9 +472,9 @@ static int has_side_effect(lir_inst_t *inst)
 static int need_by_side_exit(trace_recorder_t *rec, lir_inst_t *inst)
 {
     hashmap_iterator_t itr = { 0, 0 };
-    int i;
     while (hashmap_next(&rec->stack_map, &itr)) {
 	regstack_t *stack = (regstack_t *)itr.entry->val;
+	unsigned i;
 	for (i = 0; i < stack->list.size; i++) {
 	    if (inst == regstack_get_direct(stack, i)) {
 		return 1;

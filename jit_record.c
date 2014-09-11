@@ -143,7 +143,6 @@ static lir_t EmitSpecialInst_ObjectNot(trace_recorder_t *rec, CALL_INFO ci, lir_
 static lir_t EmitSpecialInst_GetPropertyName(trace_recorder_t *rec, CALL_INFO ci, lir_t *regs)
 {
     VALUE obj = ci->recv;
-    VALUE *reg_pc = rec->current_event->pc;
     int cacheable = vm_load_cache(obj, ci->me->def->body.attr.id, 0, ci, 1);
     assert(ci->aux.index > 0 && cacheable);
     EmitIR(GuardProperty, rec->current_event->pc, regs[0], 1 /*is_attr*/, (void *)ci);
@@ -153,7 +152,6 @@ static lir_t EmitSpecialInst_GetPropertyName(trace_recorder_t *rec, CALL_INFO ci
 static lir_t EmitSpecialInst_SetPropertyName(trace_recorder_t *rec, CALL_INFO ci, lir_t *regs)
 {
     VALUE obj = ci->recv;
-    VALUE *reg_pc = rec->current_event->pc;
     int cacheable = vm_load_cache(obj, ci->me->def->body.attr.id, 0, ci, 1);
     assert(ci->aux.index > 0 && cacheable);
     EmitIR(GuardProperty, rec->current_event->pc, regs[0], 1 /*is_attr*/, (void *)ci);

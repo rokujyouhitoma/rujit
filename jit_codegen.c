@@ -1183,7 +1183,6 @@ static void compile2c(trace_recorder_t *rec, CGen *gen, trace_t *trace, int fid)
 {
     unsigned i, j;
     hashmap_t SideExitBBs;
-    hashmap_iterator_t itr = { 0, 0 };
     compile_prologue(rec, trace, &SideExitBBs, gen, fid);
     for (i = 0; i < rec->bblist.size; i++) {
 	basicblock_t *bb = (basicblock_t *)jit_list_get(&rec->bblist, i);

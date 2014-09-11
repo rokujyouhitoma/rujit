@@ -68,7 +68,7 @@ static int vm_load_cache(VALUE obj, ID id, IC ic, rb_call_info_t *ci, int is_att
 		    ic->ic_serial = RCLASS_SERIAL(klass);
 		}
 		else { /* call_info */
-		    ci->aux.index = index + 1;
+		    ci->aux.index = (int)index + 1;
 		}
 		return 1;
 	    }
@@ -208,10 +208,23 @@ struct rb_jit_t {
     hashmap_t traces;
 };
 
+static int vm_insn_addr2insn(const VALUE val)
+{
+    int insn;
+    const void *const *table = rb_vm_get_insns_address_table();
+    const void *addr = (const void *)val;
+    for (insn = 0; insn < VM_INSTRUCTION_SIZE; insn++) {
+	if (table[insn] == addr) {
+	    return insn;
+	}
+    }
+    rb_bug("vm_insn_addr2insn: invalid insn address: %p", addr);
+}
+
 static int get_opcode(rb_control_frame_t *cfp, VALUE *reg_pc)
 {
     long pc = (reg_pc - cfp->iseq->iseq_encoded);
-    int op = (int)(cfp->iseq->iseq[pc]);
+    int op = vm_insn_addr2insn(cfp->iseq->iseq_encoded[pc]);
     assert(0 <= op && op < VM_INSTRUCTION_SIZE);
     return op;
 }
@@ -441,13 +454,13 @@ static void jit_list_init(jit_list_t *self)
 
 static uintptr_t jit_list_get(jit_list_t *self, int idx)
 {
-    assert(0 <= idx && idx < self->size);
+    assert(0 <= idx && idx < (int)self->size);
     return self->list[idx];
 }
 
 static void jit_list_set(jit_list_t *self, int idx, uintptr_t val)
 {
-    assert(0 <= idx && idx < self->size);
+    assert(0 <= idx && idx < (int)self->size);
     self->list[idx] = val;
 }
 
@@ -488,7 +501,7 @@ static void jit_list_remove(jit_list_t *self, uintptr_t val)
 {
     int i;
     if ((i = jit_list_indexof(self, val)) != -1) {
-	if (i != self->size) {
+	if (i != (int)self->size) {
 	    self->size -= 1;
 	    memmove(self->list + i, self->list + i + 1,
 	            sizeof(uintptr_t) * (self->size - i));
@@ -522,7 +535,7 @@ static int const_pool_contain(const_pool_t *self, const void *ptr)
 
 static int const_pool_add(const_pool_t *self, const void *ptr, lir_t val)
 {
-    unsigned idx;
+    int idx;
     if ((idx = const_pool_contain(self, ptr)) != -1) {
 	return idx;
     }
@@ -708,13 +721,11 @@ static regstack_t *regstack_clone(struct memory_pool *mpool, regstack_t *old)
 
 static lir_t regstack_get_direct(regstack_t *stack, int n)
 {
-    assert(0 <= n && n < stack->list.size);
     return (lir_t)jit_list_get(&stack->list, n);
 }
 
 static void regstack_set_direct(regstack_t *stack, int n, lir_t val)
 {
-    assert(0 <= n && n < stack->list.size);
     jit_list_set(&stack->list, n, (uintptr_t)val);
 }
 
@@ -731,8 +742,7 @@ static void regstack_set(regstack_t *stack, int n, lir_t reg)
 static lir_t regstack_top(regstack_t *stack, int n)
 {
     lir_t reg;
-    int i, idx = stack->list.size - n - 1;
-    assert(0 <= n && n < stack->list.size);
+    assert(0 <= n && n < (int)stack->list.size);
     reg = (lir_t)jit_list_get(&stack->list, n);
     if (reg == NULL && n < LIR_RESERVED_REGSTACK_SIZE) {
 	assert(0 && "FIXME stack underflow");
@@ -1573,7 +1583,7 @@ static void dump_lir_block(basicblock_t *block)
 static void dump_side_exit(trace_recorder_t *rec)
 {
     if (DUMP_LIR > 0) {
-	int i;
+	unsigned i;
 	hashmap_iterator_t itr = { 0, 0 };
 	while (hashmap_next(&rec->stack_map, &itr)) {
 	    VALUE *pc = (VALUE *)itr.entry->key;
