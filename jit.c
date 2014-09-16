@@ -275,6 +275,7 @@ static jit_event_t *jit_event_init(jit_event_t *e, rb_jit_t *jit, rb_thread_t *t
     e->pc = pc;
     e->trace = jit->current_trace;
     e->opcode = opcode;
+    jit->recorder->current_event = e;
     return e;
 }
 

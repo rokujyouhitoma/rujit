@@ -214,18 +214,16 @@ static void EmitSpecialInst1(trace_recorder_t *rec, jit_event_t *e)
 //    _PUSH(EmitIR(FramePush, REG_PC, ci, 0, Rblock, argc, regs));
 //}
 //
-//static void EmitNewInstance(trace_recorder_t *rec, rb_control_frame_t *reg_cfp,
-//                            VALUE *reg_pc, CALL_INFO ci,
-//                            VALUE *params, lir_t *regs)
-//{
-//    int argc = ci->argc;
-//    if ((ci->flag & VM_CALL_ARGS_BLOCKARG) || ci->blockiseq != 0) {
-//        fprintf(stderr, "Class.new with block is not supported\n");
-//        trace_recorder_abort(rec, e, TRACE_ERROR_UNSUPPORT_OP);
-//        return;
-//    }
-//    _PUSH(EmitIR(AllocObject, regs[0], argc, regs + 1));
-//}
+static void EmitNewInstance(trace_recorder_t *rec, jit_event_t *e, CALL_INFO ci, VALUE *params, lir_t *regs)
+{
+    int argc = ci->argc;
+    if ((ci->flag & VM_CALL_ARGS_BLOCKARG) || ci->blockiseq != 0) {
+	fprintf(stderr, "Class.new with block is not supported\n");
+	trace_recorder_abort(rec, e, TRACE_ERROR_UNSUPPORT_OP);
+	return;
+    }
+    _PUSH(EmitIR(AllocObject, regs[0], argc, regs + 1));
+}
 
 static void EmitJump(trace_recorder_t *rec, VALUE *pc, int link)
 {
@@ -242,67 +240,53 @@ static void EmitJump(trace_recorder_t *rec, VALUE *pc, int link)
     rec->cur_bb = bb;
 }
 
-//static void EmitMethodCall(trace_recorder_t *rec, rb_control_frame_t *reg_cfp,
-//                           VALUE *reg_pc, CALL_INFO ci, rb_block_t *block,
-//                           lir_t Rblock, int opcode)
-//{
-//    int i;
-//    lir_t Rval = NULL;
-//    lir_t regs[ci->argc + 1];
-//    VALUE params[ci->argc + 1];
-//
-//    vm_search_method(ci, ci->recv = TOPN(ci->argc));
-//    ci = trace_recorder_clone_cache(rec, ci);
-//
-//    // user defined ruby method
-//    if (ci->me && ci->me->def->type == VM_METHOD_TYPE_ISEQ) {
-//        // FIXME we need to implement vm_callee_setup_arg()
-//        EmitPushFrame(rec, REG_CFP, REG_PC, ci, Rblock, block);
-//        //EmitJump(rec, REG_PC, 0);
-//        return;
-//    }
-//
-//    PrepareInstructionArgument(rec, REG_CFP, ci->argc, params, regs);
-//    if ((Rval = EmitSpecialInst(rec, REG_PC, ci, opcode, params, regs)) != NULL) {
-//        _PUSH(Rval);
-//        return;
-//    }
-//
-//    // check ClassA.new(argc, argv)
-//    if (check_cfunc(ci->me, rb_class_new_instance)) {
-//        if (ci->me->klass == rb_cClass) {
-//            return EmitNewInstance(rec, REG_CFP, REG_PC, ci, params, regs);
-//        }
-//    }
-//
-//    // check block_given?
-//    {
-//        extern VALUE rb_f_block_given_p(void);
-//        if (check_cfunc(ci->me, rb_f_block_given_p)) {
-//            lir_t Rrecv = EmitIR(LoadSelf);
-//            EmitIR(GuardMethodCache, REG_PC, Rrecv, ci);
-//            _PUSH(EmitIR(InvokeNative, rb_f_block_given_p, 0, NULL));
-//            return;
-//        }
-//    }
-//
-//    RJitSetMode(rec->jit, rec->jit->mode_ | TRACE_MODE_EMIT_BACKWARD_BRANCH);
-//#if 0
-//    ci = trace_recorder_clone_cache(rec, ci);
-//    EmitIR(GuardMethodCache, REG_PC, regs[0], ci);
-//    Rval = EmitIR(InvokeMethod, ci, ci->argc + 1, regs);
-//    _PUSH(Rval);
-//    reg_pc = reg_pc + insn_len(opcode);
-//#else
-//    // re-push registers
-//    for (i = 0; i < ci->argc + 1; i++) {
-//        _PUSH(regs[i]);
-//    }
-//#endif
-//    trace_recorder_take_snapshot(rec, REG_PC);
-//    trace_recorder_abort(rec, e, TRACE_ERROR_NATIVE_METHOD);
-//    return;
-//}
+static void EmitMethodCall(trace_recorder_t *rec, jit_event_t *e, CALL_INFO ci, rb_block_t *block, lir_t Rblock)
+{
+    int i;
+    lir_t Rval = NULL;
+    lir_t regs[ci->argc + 1];
+    VALUE params[ci->argc + 1];
+
+    vm_search_method(ci, ci->recv = TOPN(ci->argc));
+    ci = trace_recorder_clone_cache(rec, ci);
+
+    // user defined ruby method
+    if (ci->me && ci->me->def->type == VM_METHOD_TYPE_ISEQ) {
+	assert(0 && "FIXME");
+	// FIXME we need to implement vm_callee_setup_arg()
+	//Emit_PushFrame(rec, REG_CFP, REG_PC, ci, Rblock, block);
+	//EmitJump(rec, REG_PC, 0);
+	return;
+    }
+
+    PrepareInstructionArgument(rec, e, ci->argc, params, regs);
+    if ((Rval = EmitSpecialInst(rec, REG_PC, ci, e->opcode, params, regs)) != NULL) {
+	_PUSH(Rval);
+	return;
+    }
+
+    // check ClassA.new(argc, argv)
+    if (check_cfunc(ci->me, rb_class_new_instance)) {
+	if (ci->me->klass == rb_cClass) {
+	    return EmitNewInstance(rec, e, ci, params, regs);
+	}
+    }
+
+    // check block_given?
+    if (check_cfunc(ci->me, rb_f_block_given_p)) {
+	lir_t Rrecv = EmitIR(LoadSelf);
+	EmitIR(GuardMethodCache, REG_PC, Rrecv, ci);
+	_PUSH(EmitIR(InvokeNative, rb_f_block_given_p, 0, NULL));
+	return;
+    }
+
+    // re-push registers
+    for (i = 0; i < ci->argc + 1; i++) {
+	_PUSH(regs[i]);
+    }
+    trace_recorder_take_snapshot(rec, REG_PC);
+    trace_recorder_abort(rec, e, TRACE_ERROR_NATIVE_METHOD);
+}
 
 static lir_t trace_recorder_get_localvar(trace_recorder_t *rec, basicblock_t *bb, int level, int idx)
 {
@@ -738,8 +722,7 @@ static void record_send(trace_recorder_t *rec, jit_event_t *e)
     }
 
     trace_recorder_take_snapshot(rec, REG_PC);
-    not_support_op(rec, e, "send");
-    //EmitMethodCall(rec, REG_CFP, REG_PC, ci, block, Rblock, BIN(send));
+    EmitMethodCall(rec, e, ci, block, Rblock);
 }
 
 static void record_opt_str_freeze(trace_recorder_t *rec, jit_event_t *e)
@@ -752,8 +735,7 @@ static void record_opt_send_simple(trace_recorder_t *rec, jit_event_t *e)
 {
     CALL_INFO ci = (CALL_INFO)GET_OPERAND(1);
     trace_recorder_take_snapshot(rec, REG_PC);
-    not_support_op(rec, e, "opt_send_simple");
-    //EmitMethodCall(rec, REG_CFP, REG_PC, ci, 0, 0, BIN(opt_send_simple));
+    EmitMethodCall(rec, e, ci, 0, 0);
 }
 
 static void record_invokesuper(trace_recorder_t *rec, jit_event_t *e)
