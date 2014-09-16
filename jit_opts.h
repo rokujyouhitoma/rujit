@@ -35,4 +35,6 @@
 
 #define LIR_CACHE_ENV_OPERATION 1 /* 0:disable, 1:cache env_load/env_store */
 #define HOT_TRACE_THRESHOLD 4
+
+#define ENABLE_PROFILE_TRACE_JIT
 #endif /* end of include guard */

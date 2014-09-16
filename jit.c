@@ -21,7 +21,9 @@
 #include "vm_exec.h"
 #include "iseq.h"
 
+#define JIT_HOST 1
 #include "jit.h"
+#include "ruby_jit.h"
 #include "jit_opts.h"
 #include "jit_prelude.c"
 #include "jit_hashmap.c"
@@ -77,6 +79,30 @@ static int vm_load_cache(VALUE obj, ID id, IC ic, rb_call_info_t *ci, int is_att
     return 0;
 }
 
+static VALUE
+make_no_method_exception(VALUE exc, const char *format, VALUE obj, int argc, const VALUE *argv)
+{
+    int n = 0;
+    VALUE mesg;
+    VALUE args[3];
+
+    if (!format) {
+	format = "undefined method `%s' for %s";
+    }
+    mesg = rb_const_get(exc, rb_intern("message"));
+    if (rb_method_basic_definition_p(CLASS_OF(mesg), '!')) {
+	args[n++] = rb_name_err_mesg_new(mesg, rb_str_new2(format), obj, argv[0]);
+    }
+    else {
+	args[n++] = rb_funcall(mesg, '!', 3, rb_str_new2(format), obj, argv[0]);
+    }
+    args[n++] = argv[0];
+    if (exc == rb_eNoMethodError) {
+	args[n++] = rb_ary_new4(argc - 1, argv + 1);
+    }
+    return rb_class_new_instance(n, args, exc);
+}
+
 // rujit
 static int disable_jit = 0;
 jit_runtime_t jit_runtime = {};
@@ -129,8 +155,10 @@ typedef struct lir_basicblock_t {
     jit_list_t preds;
 } basicblock_t;
 
+typedef trace_side_exit_handler_t *(*native_func_t)(rb_thread_t *, rb_control_frame_t *);
+
 struct jit_trace {
-    void *code;
+    native_func_t code;
     VALUE *start_pc;
     VALUE *last_pc;
     trace_side_exit_handler_t *parent;
@@ -234,6 +262,18 @@ static void dump_inst(jit_event_t *e)
 
 #define JIT_PROFILE_ENTER(msg) jit_profile((msg), 0)
 #define JIT_PROFILE_LEAVE(msg, cond) jit_profile((msg), (cond))
+#ifdef ENABLE_PROFILE_TRACE_JIT
+static uint64_t invoke_trace_enter = 0;
+static uint64_t invoke_trace_invoke = 0;
+static uint64_t invoke_trace_child1 = 0;
+static uint64_t invoke_trace_child2 = 0;
+static uint64_t invoke_trace_exit = 0;
+static uint64_t invoke_trace_side_exit = 0;
+static uint64_t invoke_trace_success = 0;
+#define JIT_PROFILE_COUNT(COUNTER) ((COUNTER) += 1)
+#else
+#define JIT_PROFILE_COUNT(COUNTER)
+#endif
 
 static void jit_profile(const char *msg, int print_log)
 {
@@ -279,8 +319,6 @@ static VALUE rb_cMath;
 /* redefined_flag { */
 static short jit_vm_redefined_flag[JIT_BOP_EXT_LAST_];
 static st_table *jit_opt_method_table = 0;
-
-#define JIT_OP_UNREDEFINED_P(op, klass) (LIKELY((jit_vm_redefined_flag[(op)] & (klass)) == 0))
 
 #define MATH_REDEFINED_OP_FLAG (1 << 9)
 static int
@@ -1028,6 +1066,34 @@ static void trace_link(trace_recorder_t *rec, trace_t *trace)
 	}
     }
 }
+
+static void trace_unlink(trace_t *trace)
+{
+    hashmap_iterator_t itr;
+    trace_t *buf[32] = {};
+    trace_t *root_trace;
+    int bufpos = 1;
+
+    root_trace = (trace_t *)hashmap_get(&current_jit->traces, (hashmap_data_t)trace);
+    buf[bufpos++] = trace;
+
+    while (bufpos != 0) {
+	trace = buf[--bufpos];
+	itr.entry = 0;
+	itr.index = 0;
+	while (hashmap_next(trace->side_exit, &itr)) {
+	    trace_t *child = (trace_t *)itr.entry->val;
+	    buf[bufpos++] = child;
+	}
+	if (root_trace && root_trace == trace) {
+	    LOG("drop trace from root trace set (trace=%p)", trace);
+	    hashmap_remove(&current_jit->traces, (hashmap_data_t)trace->start_pc, NULL);
+	}
+	LOG("drop trace. (trace=%p)", trace);
+	trace_delete(trace);
+    }
+}
+
 /* } trace */
 
 static void compile_trace(rb_jit_t *jit, trace_recorder_t *rec)
@@ -1094,7 +1160,43 @@ static lir_t trace_recorder_insert_stackpop(trace_recorder_t *rec)
 
 static VALUE *trace_invoke(rb_jit_t *jit, jit_event_t *e, trace_t *trace)
 {
-    return e->pc;
+    trace_side_exit_handler_t *handler;
+    rb_control_frame_t *cfp = e->cfp;
+    rb_thread_t *th = e->th;
+    //JIT_PROFILE_ENTER("invoke trace");
+    JIT_PROFILE_COUNT(invoke_trace_enter);
+_head:
+    JIT_PROFILE_COUNT(invoke_trace_invoke);
+    handler = trace->code(th, cfp);
+    if (JIT_LOG_SIDE_EXIT > 0) {
+	fprintf(stderr, "trace for %p is exit from %p\n", e->pc, handler->exit_pc);
+    }
+#if 0
+    switch (handler->exit_status) {
+    case TRACE_EXIT_SIDE_EXIT:
+	JIT_PROFILE_COUNT(invoke_trace_side_exit);
+	if (handler->child_trace) {
+	    JIT_PROFILE_COUNT(invoke_trace_child1);
+	    trace = handler->child_trace;
+	    goto L_head;
+	}
+	trace_exit(handler, th, th->cfp);
+	if (handler->child_trace) {
+	    JIT_PROFILE_COUNT(invoke_trace_child2);
+	    trace = handler->child_trace;
+	    goto L_head;
+	}
+	break;
+    case TRACE_EXIT_SUCCESS:
+	JIT_PROFILE_COUNT(invoke_trace_success);
+	break;
+    case TRACE_EXIT_ERROR:
+	assert(0 && "unreachable");
+	break;
+    }
+#endif
+    //JIT_PROFILE_LEAVE("invoke trace", 0);
+    return handler->exit_pc;
 }
 
 static int peephole(trace_recorder_t *rec, lir_inst_t *inst)
@@ -1133,6 +1235,73 @@ static lir_inst_t *trace_recorder_add_inst(trace_recorder_t *recorder, lir_inst_
 /* } trace_recorder */
 
 /* rb_jit { */
+static void jit_runtime_init(struct rb_vm_global_state *global_state_ptr)
+{
+    unsigned long i;
+    memset(&jit_runtime, 0, sizeof(jit_runtime_t));
+
+    jit_runtime.cArray = rb_cArray;
+    jit_runtime.cFixnum = rb_cFixnum;
+    jit_runtime.cFloat = rb_cFloat;
+    jit_runtime.cHash = rb_cHash;
+    jit_runtime.cMath = rb_cMath;
+    jit_runtime.cRegexp = rb_cRegexp;
+    jit_runtime.cTime = rb_cTime;
+    jit_runtime.cString = rb_cString;
+    jit_runtime.cSymbol = rb_cSymbol;
+
+    jit_runtime.cTrueClass = rb_cTrueClass;
+    jit_runtime.cFalseClass = rb_cTrueClass;
+    jit_runtime.cNilClass = rb_cNilClass;
+
+    jit_runtime._rb_check_array_type = rb_check_array_type;
+    jit_runtime._rb_big_plus = rb_big_plus;
+    jit_runtime._rb_big_minus = rb_big_minus;
+    jit_runtime._rb_big_mul = rb_big_mul;
+    jit_runtime._rb_int2big = rb_int2big;
+    jit_runtime._rb_str_length = rb_str_length;
+    jit_runtime._rb_str_plus = rb_str_plus;
+    jit_runtime._rb_str_append = rb_str_append;
+    jit_runtime._rb_str_resurrect = rb_str_resurrect;
+    jit_runtime._rb_range_new = rb_range_new;
+    jit_runtime._rb_hash_new = rb_hash_new;
+    jit_runtime._rb_hash_aref = rb_hash_aref;
+    jit_runtime._rb_hash_aset = rb_hash_aset;
+    jit_runtime._rb_reg_match = rb_reg_match;
+    jit_runtime._rb_reg_new_ary = rb_reg_new_ary;
+    jit_runtime._rb_ary_new = rb_ary_new;
+    jit_runtime._rb_ary_new_from_values = rb_ary_new_from_values;
+    jit_runtime._rb_class_new_instance = rb_class_new_instance;
+    jit_runtime._rb_obj_as_string = rb_obj_as_string;
+
+    // internal APIs
+    jit_runtime._rb_float_new_in_heap = rb_float_new_in_heap;
+    jit_runtime._ruby_float_mod = ruby_float_mod;
+    jit_runtime._rb_ary_entry = rb_ary_entry;
+    jit_runtime._rb_ary_store = rb_ary_store;
+    jit_runtime._rb_exc_raise = rb_exc_raise;
+#if SIZEOF_INT < SIZEOF_VALUE
+    jit_runtime._rb_out_of_int = rb_out_of_int;
+#endif
+    jit_runtime._rb_gvar_get = rb_gvar_get;
+    jit_runtime._rb_gvar_set = rb_gvar_set;
+
+    jit_runtime._ruby_current_vm = ruby_current_vm;
+    jit_runtime._make_no_method_exception = make_no_method_exception;
+    jit_runtime._rb_gc_writebarrier = rb_gc_writebarrier_generational;
+
+    jit_runtime.redefined_flag = jit_vm_redefined_flag;
+
+    jit_runtime.global_method_state = global_state_ptr->_global_method_state;
+    jit_runtime.global_constant_state = global_state_ptr->_global_constant_state;
+    jit_runtime.class_serial = global_state_ptr->_class_serial;
+
+    for (i = 0; i < sizeof(jit_runtime_t) / sizeof(VALUE); i++) {
+	assert(((VALUE *)&jit_runtime)[i] != 0
+	       && "some field of jit_runtime is not initialized");
+    }
+}
+
 static void jit_global_default_params_setup(struct rb_vm_global_state *global_state_ptr)
 {
     char *disable_jit_ptr;
@@ -1150,10 +1319,6 @@ static void jit_global_default_params_setup(struct rb_vm_global_state *global_st
 	    jit_vm_redefined_flag[i] = global_state_ptr->_ruby_vm_redefined_flag[i];
 	}
     }
-    jit_runtime.redefined_flag = jit_vm_redefined_flag;
-    jit_runtime.global_method_state = global_state_ptr->_global_method_state;
-    jit_runtime.global_constant_state = global_state_ptr->_global_constant_state;
-    jit_runtime.class_serial = global_state_ptr->_class_serial;
 }
 
 static void jit_default_params_setup(rb_jit_t *jit)
@@ -1209,6 +1374,16 @@ static void jit_delete(rb_jit_t *jit)
 	hashmap_dispose(&jit->traces, NULL);
 	trace_recorder_delete(jit->recorder);
 	free(jit);
+
+#ifdef ENABLE_PROFILE_TRACE_JIT
+	fprintf(stderr, "invoke_enter  %llu\n", invoke_trace_enter);
+	fprintf(stderr, "invoke_invoke %llu\n", invoke_trace_invoke);
+	fprintf(stderr, "invoke_child1 %llu\n", invoke_trace_child1);
+	fprintf(stderr, "invoke_child2 %llu\n", invoke_trace_child2);
+	fprintf(stderr, "invoke_exit   %llu\n", invoke_trace_exit);
+	fprintf(stderr, "invoke_side   %llu\n", invoke_trace_side_exit);
+	fprintf(stderr, "invoke_succ   %llu\n", invoke_trace_success);
+#endif
     }
 }
 
@@ -1217,6 +1392,7 @@ void Init_rawjit(struct rb_vm_global_state *global_state_ptr)
     jit_global_default_params_setup(global_state_ptr);
     if (!disable_jit) {
 	rb_cMath = rb_singleton_class(rb_mMath);
+	jit_runtime_init(global_state_ptr);
 	current_jit = jit_init();
 	Init_jit(); // load jit_prelude
     }
@@ -1463,7 +1639,6 @@ typedef void *voidPtr;
 typedef basicblock_t *BasicBlockPtr;
 typedef void *lir_folder_t;
 
-#include "lir_template.h"
 #include "lir.c"
 
 static int lir_is_terminator(lir_inst_t *inst)

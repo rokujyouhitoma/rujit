@@ -22,11 +22,65 @@ struct rb_vm_global_state {
 };
 
 typedef struct jit_runtime_struct {
+    VALUE cArray;
+    VALUE cFixnum;
+    VALUE cFloat;
+    VALUE cHash;
+    VALUE cMath;
+    VALUE cRegexp;
+    VALUE cString;
+    VALUE cTime;
+    VALUE cSymbol;
+
+    VALUE cFalseClass;
+    VALUE cTrueClass;
+    VALUE cNilClass;
+
+    // global data
     short *redefined_flag;
     rb_serial_t *global_method_state;
     rb_serial_t *global_constant_state;
     rb_serial_t *class_serial;
+    struct rb_vm_struct *_ruby_current_vm;
+
+    // ruby API
+    // type check API
+    VALUE (*_rb_check_array_type)(VALUE);
+    VALUE (*_rb_big_plus)(VALUE, VALUE);
+    VALUE (*_rb_big_minus)(VALUE, VALUE);
+    VALUE (*_rb_big_mul)(VALUE, VALUE);
+    VALUE (*_rb_int2big)(SIGNED_VALUE);
+    VALUE (*_rb_str_length)(VALUE);
+    VALUE (*_rb_str_plus)(VALUE, VALUE);
+    VALUE (*_rb_str_append)(VALUE, VALUE);
+    VALUE (*_rb_str_resurrect)(VALUE);
+    VALUE (*_rb_range_new)(VALUE, VALUE, int);
+    VALUE (*_rb_hash_new)();
+    VALUE (*_rb_hash_aref)(VALUE, VALUE);
+    VALUE (*_rb_hash_aset)(VALUE, VALUE, VALUE);
+    VALUE (*_rb_reg_match)(VALUE, VALUE);
+    VALUE (*_rb_reg_new_ary)(VALUE, int);
+    VALUE (*_rb_ary_new)();
+    VALUE (*_rb_ary_new_from_values)(long n, const VALUE *elts);
+    VALUE (*_rb_gvar_get)(struct rb_global_entry *);
+    VALUE (*_rb_gvar_set)(struct rb_global_entry *, VALUE);
+    VALUE (*_rb_class_new_instance)(int argc, const VALUE *argv, VALUE klass);
+    VALUE (*_rb_obj_as_string)(VALUE);
+
+    // Internal ruby APIs
+    double (*_ruby_float_mod)(double, double);
+    VALUE (*_rb_float_new_in_heap)(double);
+    VALUE (*_rb_ary_entry)(VALUE, long);
+    void (*_rb_ary_store)(VALUE, long, VALUE);
+    void (*_rb_gc_writebarrier)(VALUE a, VALUE b);
+#if SIZEOF_INT < SIZEOF_VALUE
+    NORETURN(void (*_rb_out_of_int)(SIGNED_VALUE num));
+#endif
+    NORETURN(void (*_rb_exc_raise)(VALUE));
+    VALUE (*_make_no_method_exception)(VALUE exc, const char *format, VALUE obj,
+                                       int argc, const VALUE *argv);
 } jit_runtime_t;
+
 extern jit_runtime_t jit_runtime;
 
 enum JIT_BOP {
@@ -82,6 +136,14 @@ struct trace_side_exit_handler {
     struct jit_trace *this_trace;
     struct jit_trace *child_trace;
     VALUE *exit_pc;
+    long exit_status;
 };
 
+#ifdef JIT_HOST
+#define JIT_RUNTIME (&jit_runtime)
+#else
+static const jit_runtime_t *local_jit_runtime;
+#define JIT_RUNTIME (local_jit_runtime)
+#endif
+#define JIT_OP_UNREDEFINED_P(op, klass) (LIKELY((JIT_RUNTIME->redefined_flag[(op)] & (klass)) == 0))
 #endif /* end of include guard */

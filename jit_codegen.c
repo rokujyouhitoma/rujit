@@ -7,6 +7,7 @@
   Copyright (C) 2014 Masahiro Ide
 
  **********************************************************************/
+#define JIT_MAX_COMPILE_TRACE 10
 
 typedef struct buffer {
     jit_list_t buf;
@@ -93,7 +94,7 @@ static void cgen_open(CGen *gen, enum cgen_mode mode, const char *path, int id)
     }
     else {
 	char fpath[512] = {};
-	snprintf(fpath, 512, "/tmp/gwjit.%d.%d.c", getpid(), id);
+	snprintf(fpath, 512, "/tmp/ruby_jit.%d.%d.c", getpid(), id);
 	gen->fp = fopen(fpath, "w");
     }
     gen->path = path;
@@ -108,7 +109,7 @@ static int cgen_freeze(CGen *gen, int id)
     JIT_PROFILE_ENTER("nativecode generation");
     if (gen->mode == FILE_MODE) {
 	char fpath[512] = {};
-	snprintf(fpath, 512, "/tmp/gwjit.%d.%d.c", getpid(), id);
+	snprintf(fpath, 512, "/tmp/ruby_jit.%d.%d.c", getpid(), id);
 	cgen_setup_command(gen, gen->path, fpath);
 
 	if (JIT_DUMP_COMPILE_LOG > 1) {
@@ -159,8 +160,9 @@ static void *cgen_get_function(CGen *gen, const char *fname, trace_t *trace)
 	snprintf(fname2, 128, "init_%s", fname);
 	finit = dlsym(gen->hdr, fname2);
 	if (finit) {
-	    finit(NULL, trace);
+	    finit(&jit_runtime, trace);
 	    trace->code = dlsym(gen->hdr, fname);
+	    trace->handler = gen->hdr;
 	}
     }
     return NULL;
@@ -168,7 +170,7 @@ static void *cgen_get_function(CGen *gen, const char *fname, trace_t *trace)
 
 static long get_sideexit_id(hashmap_t *sideexits, VALUE *pc)
 {
-    return hashmap_get(sideexits, (hashmap_data_t)pc);
+    return hashmap_get(sideexits, (hashmap_data_t)pc) >> 1;
 }
 
 #define EMIT_CODE(GEN, OP, VAL, LHS, RHS)                         \
@@ -360,13 +362,10 @@ static void compile_inst(trace_recorder_t *Rec, CGen *gen, hashmap_t *SideExitBB
 	case OPCODE_IGuardMethodRedefine: {
 	    IGuardMethodRedefine *ir = (IGuardMethodRedefine *)Inst;
 	    long exit_block_id = get_sideexit_id(SideExitBBs, ir->Exit);
-	    const char *op = (ir->bop < JIT_BOP_LAST_)
-	                         ? "BASIC_OP_UNREDEFINED_P"
-	                         : "JIT_OP_UNREDEFINED_P";
-	    cgen_printf(gen, "if (!%s(%d, %d)) {\n"
+	    cgen_printf(gen, "if (!JIT_OP_UNREDEFINED_P(%d, %d)) {\n"
 	                     "  goto L_exit%ld;\n"
 	                     "}\n",
-	                op, ir->bop, ir->klass_flag, exit_block_id);
+	                ir->bop, ir->klass_flag, exit_block_id);
 	    break;
 	}
 	case OPCODE_IExit: {
@@ -976,7 +975,7 @@ static void compile_inst(trace_recorder_t *Rec, CGen *gen, hashmap_t *SideExitBB
 	case OPCODE_IInvokeNative: {
 	    int i;
 	    IInvokeNative *ir = (IInvokeNative *)Inst;
-	    cgen_printf(gen, "  v%ld = ((gwjit_native_func%d_t)%p)(", Id, ir->argc,
+	    cgen_printf(gen, "  v%ld = ((ruby_jit_native_func%d_t)%p)(", Id, ir->argc,
 	                ir->fptr);
 	    for (i = 0; i < ir->argc; i++) {
 		if (i != 0) {
@@ -1137,7 +1136,7 @@ static void compile_prologue(trace_recorder_t *rec, trace_t *trace, hashmap_t *S
                 "#include <assert.h>\n"
                 "#include <dlfcn.h>\n"
                 "#define BLOCK_LABEL(label) L_##label:;(void)&&L_##label;\n"
-                "const jit_runtime_t *local_jit_runtime = NULL;\n");
+                "static const jit_runtime_t *local_jit_runtime = NULL;\n");
 
     if (JIT_DUMP_COMPILE_LOG > 0) {
 	const rb_iseq_t *iseq = trace->iseq;
@@ -1152,7 +1151,7 @@ static void compile_prologue(trace_recorder_t *rec, trace_t *trace, hashmap_t *S
     prepare_side_exit(rec, gen, SideExitBBs);
 
     cgen_printf(gen,
-                "void init_gwjit_%d(const jit_runtime_t *ctx, struct jit_trace *t)"
+                "void init_ruby_jit_%d(const jit_runtime_t *ctx, struct jit_trace *t)"
                 "{\n"
                 "  local_jit_runtime = ctx;\n"
                 "  (void) make_no_method_exception;\n"
@@ -1167,7 +1166,7 @@ static void compile_prologue(trace_recorder_t *rec, trace_t *trace, hashmap_t *S
     }
     cgen_printf(gen, "}\n");
 
-    cgen_printf(gen, "trace_side_exit_handler_t *gwjit_%d(rb_thread_t *th,\n"
+    cgen_printf(gen, "trace_side_exit_handler_t *ruby_jit_%d(rb_thread_t *th,\n"
                      "    rb_control_frame_t *reg_cfp)\n"
                      "{\n"
                      "  VALUE *original_sp = GET_SP();\n"
@@ -1177,6 +1176,48 @@ static void compile_prologue(trace_recorder_t *rec, trace_t *trace, hashmap_t *S
 
 static void compile_epilogue(trace_t *trace, CGen *gen)
 {
+}
+
+static void compile_sideexit(trace_recorder_t *rec, trace_t *trace, CGen *gen, hashmap_t *SideExitBBs)
+{
+    /*
+       sp[0..n] = StackMap[0..n]
+     * return PC;
+     */
+    int i, j;
+    hashmap_iterator_t itr = { 0, 0 };
+    while (hashmap_next(SideExitBBs, &itr)) {
+	VALUE *pc = (VALUE *)itr.entry->key;
+	long block_id = itr.entry->val >> 1;
+	regstack_t *stack = (regstack_t *)hashmap_get(&rec->stack_map, (hashmap_data_t)pc);
+	cgen_printf(gen, "L_exit%ld:;\n", block_id);
+	cgen_printf(gen, "//fprintf(stderr,\"exit%ld : pc=%p\\n\");\n", block_id, pc);
+
+	j = 0;
+	cgen_printf(gen, "th->cfp = reg_cfp = original_cfp;\n");
+	cgen_printf(gen, "SET_SP(original_sp);\n");
+	for (i = 0; i < stack->list.size; i++) {
+	    lir_t inst = (lir_t)stack->list.list[i];
+	    if (inst) {
+		if (lir_opcode(inst) == OPCODE_IFramePush) {
+		    IFramePush *ir = (IFramePush *)inst;
+		    cgen_printf(gen, "SET_SP(GET_SP() + %d);\n", j);
+		    assert(0 && "FIXME");
+		    //EmitFramePush(Rec, gen, ir, 1);
+		    j = 0;
+		}
+		else {
+		    lir_t ir = (lir_t)stack->list.list[i];
+		    cgen_printf(gen, "(GET_SP())[%d] = v%ld;\n", j, lir_getid(ir));
+		    j++;
+		}
+	    }
+	}
+
+	cgen_printf(gen, "SET_SP(GET_SP() + %d);\n"
+	                 "return &side_exit_handler_%ld;\n",
+	            j, block_id);
+    }
 }
 
 static void compile2c(trace_recorder_t *rec, CGen *gen, trace_t *trace, int fid)
@@ -1204,6 +1245,7 @@ static void compile2c(trace_recorder_t *rec, CGen *gen, trace_t *trace, int fid)
 	}
     }
 
+    compile_sideexit(rec, trace, gen, &SideExitBBs);
     cgen_printf(gen, "}\n");
     compile_epilogue(trace, gen);
     hashmap_dispose(&SideExitBBs, 0);
@@ -1217,13 +1259,13 @@ static void trace_compile(trace_recorder_t *rec, trace_t *trace)
     CGen gen;
     int id = serial_id++;
 
-    assert(serial_id < 100 && "too many compiled trace");
+    assert(serial_id < JIT_MAX_COMPILE_TRACE && "too many compiled trace");
     if (id == 0) {
 	//gwlocal_jit_runtime_init();
     }
 
-    snprintf(fname, 128, "gwjit_%d", id);
-    snprintf(path, 128, "/tmp/gwjit.%d.%d.dylib", (unsigned)getpid(), id);
+    snprintf(fname, 128, "ruby_jit_%d", id);
+    snprintf(path, 128, "/tmp/ruby_jit.%d.%d.dylib", (unsigned)getpid(), id);
 
     cgen_open(&gen, FILE_MODE, path, id);
 
@@ -1233,11 +1275,6 @@ static void trace_compile(trace_recorder_t *rec, trace_t *trace)
     }
     else {
 	cgen_get_function(&gen, fname, trace);
-	if (trace->code) {
-	    //trace_freeze(Rec, trace);
-	    //FreezeInlineCache(&Rec->CacheMng);
-	}
     }
-    asm volatile("int3");
     cgen_close(&gen);
 }
