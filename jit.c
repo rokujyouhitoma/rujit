@@ -38,6 +38,11 @@
 #define RC_INIT(O) ((O)->refc = 1)
 #define RC_CHECK0(O) ((O)->refc == 0)
 
+#undef REG_CFP
+#undef REG_PC
+#define REG_CFP ((e)->cfp)
+#define REG_PC ((e)->pc)
+
 // imported api from ruby-core
 extern void vm_search_method(rb_call_info_t *ci, VALUE recv);
 extern VALUE rb_f_block_given_p(void);
@@ -1129,7 +1134,6 @@ static void trace_recorder_abort(trace_recorder_t *rec, jit_event_t *e, enum tra
 {
     rb_jit_t *jit = current_jit;
     if (reason != TRACE_ERROR_OK) {
-	rb_control_frame_t *reg_cfp = e->cfp;
 	const rb_iseq_t *iseq = GET_ISEQ();
 	VALUE file = iseq->location.path;
 	fprintf(stderr, "failed to trace at file:%s line:%d because %s\n",
@@ -1465,7 +1469,6 @@ static trace_t *find_trace(rb_jit_t *jit, jit_event_t *e)
 static int is_backward_branch(jit_event_t *e, VALUE **target_pc_ptr)
 {
     OFFSET dst;
-    rb_control_frame_t *reg_cfp = e->cfp;
     if (e->opcode != BIN(branchif)) {
 	return 0;
     }
@@ -1503,13 +1506,11 @@ static int is_tracable_special_inst(int opcode, CALL_INFO ci);
 
 static int is_tracable_call_inst(jit_event_t *e)
 {
-    rb_control_frame_t *reg_cfp;
-    CALL_INFO ci;
+    CALL_INFO ci = NULL;
     if (e->opcode != BIN(send) && e->opcode != BIN(opt_send_simple)) {
 	return 1;
     }
 
-    reg_cfp = e->cfp;
     ci = (CALL_INFO)GET_OPERAND(1);
     vm_search_method(ci, ci->recv = TOPN(ci->argc));
     if (ci->me) {

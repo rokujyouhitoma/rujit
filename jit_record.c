@@ -24,10 +24,6 @@
 #define _PUSH(REG) regstack_push(rec, &(rec)->regstack, REG)
 #define _TOPN(N) regstack_top(&(rec)->regstack, (int)(N))
 #define _SET(N, REG) regstack_set(&(rec)->regstack, (int)(N), REG)
-#undef REG_CFP
-#undef REG_PC
-#define REG_CFP ((e)->cfp)
-#define REG_PC ((e)->pc)
 
 static lir_t EmitLoadConst(trace_recorder_t *rec, VALUE val)
 {
