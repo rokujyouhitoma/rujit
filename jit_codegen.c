@@ -351,7 +351,7 @@ static void compile_inst(trace_recorder_t *Rec, CGen *gen, hashmap_t *SideExitBB
 	    cgen_printf(
 	        gen,
 	        "{ CALL_INFO ci = (CALL_INFO) %p;\n"
-	        "  if (!(GET_GLOBAL_METHOD_STATE()    == ci->method_state &&\n"
+	        "  if (!(JIT_GET_GLOBAL_METHOD_STATE()    == ci->method_state &&\n"
 	        "       RCLASS_SERIAL(CLASS_OF(v%ld)) == ci->class_serial)) {\n"
 	        "    goto L_exit%ld;\n"
 	        "  }\n"
@@ -1274,6 +1274,7 @@ static void trace_compile(trace_recorder_t *rec, trace_t *trace)
 	//trace->Code = (void *) 0xdeadbeaf;
     }
     else {
+	trace_recorder_freeze_cache(rec);
 	cgen_get_function(&gen, fname, trace);
     }
     cgen_close(&gen);

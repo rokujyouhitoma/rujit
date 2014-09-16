@@ -25,6 +25,10 @@
 #ifndef JIT_RUBY_JIT_H
 #define JIT_RUBY_JIT_H
 
+#define JIT_OP_UNREDEFINED_P(op, klass) (LIKELY((JIT_RUNTIME->redefined_flag[(op)] & (klass)) == 0))
+#define JIT_GET_GLOBAL_METHOD_STATE() (*(JIT_RUNTIME)->global_method_state)
+#define JIT_GET_GLOBAL_CONSTANT_STATE() (*(JIT_RUNTIME)->global_constant_state)
+
 #ifndef JIT_HOST
 typedef VALUE (*jit_native_func0_t)();
 typedef VALUE (*jit_native_func1_t)(VALUE);

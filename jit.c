@@ -210,6 +210,8 @@ typedef struct trace_recorder {
     unsigned last_inst_id;
     struct memory_pool mpool;
     jit_list_t bblist;
+    jit_list_t cache_pool;
+    unsigned cache_max;
     regstack_t regstack;
     hashmap_t stack_map;
 } trace_recorder_t;
@@ -226,6 +228,7 @@ struct rb_jit_t {
     trace_recorder_t *recorder;
     trace_mode_t mode;
     hashmap_t traces;
+    jit_list_t method_cache;
 };
 
 static int vm_insn_addr2insn(const VALUE val)
@@ -923,6 +926,7 @@ static trace_recorder_t *trace_recorder_new()
     memset(recorder, 0, sizeof(*recorder));
     memory_pool_init(&recorder->mpool);
     jit_list_init(&recorder->bblist);
+    jit_list_init(&recorder->cache_pool);
     regstack_init(&recorder->regstack);
     hashmap_init(&recorder->stack_map, 1);
     return recorder;
@@ -930,18 +934,22 @@ static trace_recorder_t *trace_recorder_new()
 
 static void trace_recorder_delete(trace_recorder_t *recorder)
 {
-    memory_pool_init(&recorder->mpool);
     jit_list_delete(&recorder->bblist);
     regstack_delete(&recorder->regstack);
     hashmap_dispose(&recorder->stack_map, (hashmap_entry_destructor_t)regstack_delete);
+    memory_pool_reset(&recorder->mpool, 0);
     free(recorder);
 }
+
+static void trace_recorder_disable_cache(trace_recorder_t *recorder);
 
 static void trace_recorder_clear(trace_recorder_t *rec, trace_t *trace, int alloc_memory)
 {
     rec->last_inst_id = 0;
     rec->bblist.size = 0;
     rec->trace = trace;
+    rec->cache_max = 0;
+    trace_recorder_disable_cache(rec);
     regstack_delete(&rec->regstack);
     regstack_init(&rec->regstack);
     memory_pool_reset(&rec->mpool, alloc_memory);
@@ -978,8 +986,31 @@ static lir_t trace_recorder_add_const(trace_recorder_t *recorder, VALUE value, l
 
 static CALL_INFO trace_recorder_clone_cache(trace_recorder_t *recorder, CALL_INFO ci)
 {
-    assert(0 && "FIXME implement");
-    return 0;
+    CALL_INFO newci = (CALL_INFO)malloc(sizeof(*newci));
+    memcpy(newci, ci, sizeof(*newci));
+    jit_list_add(&recorder->cache_pool, (uintptr_t)newci);
+    return newci;
+}
+
+static void trace_recorder_freeze_cache(trace_recorder_t *recorder)
+{
+    unsigned i;
+    recorder->cache_max = recorder->cache_pool.size;
+    for (i = 0; i < recorder->cache_max; i++) {
+	CALL_INFO ci = (CALL_INFO)jit_list_get(&recorder->cache_pool, i);
+	jit_list_add(&current_jit->method_cache, (uintptr_t)ci);
+    }
+    recorder->cache_pool.size = 0;
+}
+
+static void trace_recorder_disable_cache(trace_recorder_t *recorder)
+{
+    unsigned i;
+    for (i = recorder->cache_max; i < recorder->cache_pool.size; i++) {
+	CALL_INFO ci = (CALL_INFO)jit_list_get(&recorder->cache_pool, i);
+	free(ci);
+    }
+    recorder->cache_pool.size = recorder->cache_max;
 }
 
 static void trace_recorder_take_snapshot(trace_recorder_t *recorder, VALUE *pc)
@@ -1225,7 +1256,7 @@ static lir_inst_t *trace_recorder_add_inst(trace_recorder_t *recorder, lir_inst_
 	newinst = lir_inst_allocate(recorder, inst, inst_size);
 	basicblock_append(recorder->cur_bb, newinst);
     }
-    if (DUMP_LIR) {
+    if (DUMP_LIR > 1) {
 	dump_lir_inst(newinst);
     }
     update_userinfo(recorder, newinst);
@@ -1364,15 +1395,21 @@ static rb_jit_t *jit_init()
     hashmap_init(&jit->traces, 1);
     rb_jit_init_redefined_flag();
     jit_default_params_setup(jit);
+    jit_list_init(&jit->method_cache);
     return jit;
 }
 
 static void jit_delete(rb_jit_t *jit)
 {
     if (jit) {
+	unsigned i;
 	// FIXME need to free allocated traces
 	hashmap_dispose(&jit->traces, NULL);
 	trace_recorder_delete(jit->recorder);
+	for (i = 0; i < jit->method_cache.size; i++) {
+	    free((void *)jit_list_get(&jit->method_cache, i));
+	}
+	jit_list_delete(&jit->method_cache);
 	free(jit);
 
 #ifdef ENABLE_PROFILE_TRACE_JIT

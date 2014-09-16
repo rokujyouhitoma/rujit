@@ -145,5 +145,4 @@ struct trace_side_exit_handler {
 static const jit_runtime_t *local_jit_runtime;
 #define JIT_RUNTIME (local_jit_runtime)
 #endif
-#define JIT_OP_UNREDEFINED_P(op, klass) (LIKELY((JIT_RUNTIME->redefined_flag[(op)] & (klass)) == 0))
 #endif /* end of include guard */
