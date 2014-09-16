@@ -192,39 +192,6 @@ static void EmitSpecialInst1(trace_recorder_t *rec, jit_event_t *e)
     EmitSpecialInst0(rec, e, ci, e->opcode, params, regs);
 }
 
-//static void EmitPushFrame(trace_recorder_t *rec, rb_control_frame_t *reg_cfp,
-//        VALUE *reg_pc, CALL_INFO ci,
-//        lir_t Rblock, rb_block_t *block)
-//{
-//    int i, argc = ci->orig_argc + 1 /*recv*/;
-//    lir_t regs[argc];
-//    VALUE params[argc];
-//
-//    for (i = 0; i < argc; i++) {
-//        params[i] = TOPN(ci->orig_argc - i);
-//        regs[ci->orig_argc - i] = _POP();
-//    }
-//
-//    rec->CallDepth += 1;
-//    EmitIR(GuardMethodCache, REG_PC, regs[0], ci);
-//    if (Rblock) {
-//        EmitIR(GuardBlockEqual, REG_PC, Rblock, (VALUE)block);
-//    }
-//    PushCallStack(rec, argc, regs, 1);
-//    _PUSH(EmitIR(FramePush, REG_PC, ci, 0, Rblock, argc, regs));
-//}
-//
-static void EmitNewInstance(trace_recorder_t *rec, jit_event_t *e, CALL_INFO ci, VALUE *params, lir_t *regs)
-{
-    int argc = ci->argc;
-    if ((ci->flag & VM_CALL_ARGS_BLOCKARG) || ci->blockiseq != 0) {
-	fprintf(stderr, "Class.new with block is not supported\n");
-	trace_recorder_abort(rec, e, TRACE_ERROR_UNSUPPORT_OP);
-	return;
-    }
-    _PUSH(EmitIR(AllocObject, regs[0], argc, regs + 1));
-}
-
 static void EmitJump(trace_recorder_t *rec, VALUE *pc, int link)
 {
     basicblock_t *bb = NULL;
@@ -240,6 +207,43 @@ static void EmitJump(trace_recorder_t *rec, VALUE *pc, int link)
     rec->cur_bb = bb;
 }
 
+static void EmitPushFrame(trace_recorder_t *rec, jit_event_t *e, CALL_INFO ci, lir_t Rblock, rb_block_t *block)
+{
+    int i, argc = ci->orig_argc + 1 /*recv*/;
+    lir_t regs[argc];
+    lir_t ret = NULL;
+    VALUE params[argc];
+    variable_table_t *newtable = variable_table_init(&rec->mpool, NULL);
+
+    for (i = 0; i < argc; i++) {
+	params[i] = TOPN(ci->orig_argc - i);
+	regs[ci->orig_argc - i] = _POP();
+    }
+
+    EmitIR(GuardMethodCache, REG_PC, regs[0], ci);
+    if (Rblock) {
+	EmitIR(GuardBlockEqual, REG_PC, Rblock, (VALUE)block);
+    }
+    EmitJump(rec, REG_PC, 0);
+    call_stack_push(rec->cur_bb->call_stack, newtable);
+    for (i = 0; i < argc; i++) {
+	_PUSH(regs[i]);
+    }
+    _PUSH(ret = EmitIR(FramePush, REG_PC, ci, 0, Rblock, argc, regs));
+    newtable->first_inst = ret;
+}
+
+static void EmitNewInstance(trace_recorder_t *rec, jit_event_t *e, CALL_INFO ci, VALUE *params, lir_t *regs)
+{
+    int argc = ci->argc;
+    if ((ci->flag & VM_CALL_ARGS_BLOCKARG) || ci->blockiseq != 0) {
+	fprintf(stderr, "Class.new with block is not supported\n");
+	trace_recorder_abort(rec, e, TRACE_ERROR_UNSUPPORT_OP);
+	return;
+    }
+    _PUSH(EmitIR(AllocObject, regs[0], argc, regs + 1));
+}
+
 static void EmitMethodCall(trace_recorder_t *rec, jit_event_t *e, CALL_INFO ci, rb_block_t *block, lir_t Rblock)
 {
     int i;
@@ -252,10 +256,8 @@ static void EmitMethodCall(trace_recorder_t *rec, jit_event_t *e, CALL_INFO ci, 
 
     // user defined ruby method
     if (ci->me && ci->me->def->type == VM_METHOD_TYPE_ISEQ) {
-	assert(0 && "FIXME");
 	// FIXME we need to implement vm_callee_setup_arg()
-	//Emit_PushFrame(rec, REG_CFP, REG_PC, ci, Rblock, block);
-	//EmitJump(rec, REG_PC, 0);
+	EmitPushFrame(rec, e, ci, Rblock, block);
 	return;
     }
 
@@ -301,7 +303,7 @@ static void trace_recorder_set_localvar(trace_recorder_t *rec, basicblock_t *bb,
 {
     variable_table_t *vtable;
     while ((vtable = call_stack_get(bb->call_stack, level)) == NULL) {
-	call_stack_push(bb->call_stack, variable_table_init(&rec->mpool, level));
+	call_stack_push(bb->call_stack, variable_table_init(&rec->mpool, NULL));
     }
     variable_table_set(vtable, idx, val);
 }
@@ -812,7 +814,10 @@ static void record_invokeblock(trace_recorder_t *rec, jit_event_t *e)
 
 static void record_leave(trace_recorder_t *rec, jit_event_t *e)
 {
+    int i;
     lir_t Val;
+    variable_table_t *vtable;
+    IFramePush *inst;
     if (VM_FRAME_TYPE_FINISH_P(REG_CFP)) {
 	trace_recorder_abort(rec, e, TRACE_ERROR_LEAVE);
 	return;
@@ -822,10 +827,16 @@ static void record_leave(trace_recorder_t *rec, jit_event_t *e)
 	return;
     }
     Val = _POP();
+    vtable = call_stack_pop(rec->cur_bb->call_stack);
+    inst = (IFramePush *)vtable->first_inst;
+    assert(inst->base.opcode == OPCODE_IFramePush);
+    _POP(); // pop IFramePush
+    for (i = 0; i < inst->argc; i++) {
+	_POP();
+    }
 
     EmitIR(FramePop);
     EmitJump(rec, REG_PC, 0);
-    basicblock_call_stack_size(rec->cur_bb);
     _PUSH(Val);
 }
 
