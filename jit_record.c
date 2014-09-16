@@ -759,57 +759,61 @@ static void record_invokesuper(trace_recorder_t *rec, jit_event_t *e)
 
 static void record_invokeblock(trace_recorder_t *rec, jit_event_t *e)
 {
-    //    const rb_block_t* block;
-    //    CALL_INFO ci = (CALL_INFO)GET_OPERAND(1);
-    //    int i, argc = 1 /*recv*/ + ci->orig_argc;
-    //    lir_t Rblock;
-    //    lir_t regs[ci->orig_argc + 1];
-    //    VALUE params[ci->orig_argc + 1];
-    //
-    //    VALUE type;
-    //
-    //    trace_recorder_take_snapshot(rec, REG_PC);
-    //
-    //    block = rb_vm_control_frame_block_ptr(reg_cfp);
-    //    regs[0] = EmitIR(LoadSelf);
-    //    Rblock = EmitIR(LoadBlock, block->iseq);
-    //
-    //    ci->argc = ci->orig_argc;
-    //    ci->blockptr = 0;
-    //    ci->recv = GET_SELF();
-    //
-    //    // fprintf(stderr, "cfp=%p, block=%p\n", REG_CFP, block);
-    //    type = GET_ISEQ()->local_iseq->type;
-    //
-    //    if ((type != ISEQ_TYPE_METHOD && type != ISEQ_TYPE_CLASS) || block == 0) {
-    //        // "no block given (yield)"
-    //        trace_recorder_abort(rec, e, TRACE_ERROR_THROW);
-    //        return;
-    //    }
-    //
-    //    if (UNLIKELY(ci->flag & VM_CALL_ARGS_SPLAT)) {
-    //        trace_recorder_abort(rec, e, TRACE_ERROR_UNSUPPORT_OP);
-    //        return;
-    //    }
-    //
-    //    if (BUILTIN_TYPE(block->iseq) == T_NODE) {
-    //        // yield native block
-    //        trace_recorder_abort(rec, e, TRACE_ERROR_NATIVE_METHOD);
-    //        return;
-    //    }
-    //
-    //    rec->CallDepth += 1;
-    //
-    //    for (i = 0; i < ci->orig_argc; i++) {
-    //        params[i] = TOPN(ci->orig_argc - i);
-    //        regs[ci->orig_argc - i] = _POP();
-    //    }
-    //
-    //    EmitIR(GuardBlockEqual, REG_PC, Rblock, (VALUE)block);
-    //    PushCallStack(rec, argc, regs, 0);
-    //    _PUSH(EmitIR(FramePush, REG_PC, ci, 1, Rblock, argc, regs));
-    //
-    //    //EmitJump(rec, REG_PC, 0);
+    const rb_block_t *block;
+    CALL_INFO ci = (CALL_INFO)GET_OPERAND(1);
+    int i, argc = 1 /*recv*/ + ci->orig_argc;
+    lir_t Rblock, ret;
+    lir_t regs[ci->orig_argc + 1];
+    VALUE params[ci->orig_argc + 1];
+
+    VALUE type;
+    variable_table_t *newtable = variable_table_init(&rec->mpool, NULL);
+
+    trace_recorder_take_snapshot(rec, REG_PC);
+
+    block = rb_vm_control_frame_block_ptr(REG_CFP);
+    regs[0] = EmitIR(LoadSelf);
+    Rblock = EmitIR(LoadBlock, block->iseq);
+
+    ci->argc = ci->orig_argc;
+    ci->blockptr = 0;
+    ci->recv = GET_SELF();
+
+    // fprintf(stderr, "cfp=%p, block=%p\n", REG_CFP, block);
+    type = GET_ISEQ()->local_iseq->type;
+
+    if ((type != ISEQ_TYPE_METHOD && type != ISEQ_TYPE_CLASS) || block == 0) {
+	// "no block given (yield)"
+	trace_recorder_abort(rec, e, TRACE_ERROR_THROW);
+	return;
+    }
+
+    if (UNLIKELY(ci->flag & VM_CALL_ARGS_SPLAT)) {
+	trace_recorder_abort(rec, e, TRACE_ERROR_UNSUPPORT_OP);
+	return;
+    }
+
+    if (BUILTIN_TYPE(block->iseq) == T_NODE) {
+	// yield native block
+	trace_recorder_abort(rec, e, TRACE_ERROR_NATIVE_METHOD);
+	return;
+    }
+
+    call_stack_push(rec->cur_bb->call_stack, newtable);
+
+    for (i = 0; i < ci->orig_argc; i++) {
+	params[i] = TOPN(ci->orig_argc - i);
+	regs[ci->orig_argc - i] = _POP();
+    }
+
+    EmitIR(GuardBlockEqual, REG_PC, Rblock, (VALUE)block);
+    for (i = 0; i < argc; i++) {
+	_PUSH(regs[i]);
+    }
+
+    _PUSH(ret = EmitIR(FramePush, REG_PC, ci, 1, Rblock, argc, regs));
+    EmitJump(rec, REG_PC, 0);
+    newtable->first_inst = ret;
 }
 
 static void record_leave(trace_recorder_t *rec, jit_event_t *e)
