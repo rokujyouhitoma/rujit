@@ -129,8 +129,6 @@ typedef struct lir_basicblock_t {
     jit_list_t preds;
 } basicblock_t;
 
-typedef struct trace_side_exit_handler trace_side_exit_handler_t;
-
 struct jit_trace {
     void *code;
     VALUE *start_pc;
@@ -142,12 +140,6 @@ struct jit_trace {
     void *handler;
     hashmap_t *side_exit;
     const_pool_t cpool;
-};
-
-struct trace_side_exit_handler {
-    trace_t *this_trace;
-    trace_t *child_trace;
-    VALUE *exit_pc;
 };
 
 #define TRACE_ERROR_INFO(OP, TAIL)                                        \

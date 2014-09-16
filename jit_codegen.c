@@ -154,7 +154,7 @@ static void *cgen_get_function(CGen *gen, const char *fname, trace_t *trace)
 	gen->hdr = dlopen(gen->path, RTLD_LAZY);
     }
     if (gen->hdr != NULL) {
-	int (*finit)(const void *jit_context, trace_t *this_trace);
+	int (*finit)(const void *local_jit_runtime, trace_t *this_trace);
 	char fname2[128] = {};
 	snprintf(fname2, 128, "init_%s", fname);
 	finit = dlsym(gen->hdr, fname2);
@@ -231,7 +231,7 @@ static void compile_inst(trace_recorder_t *Rec, CGen *gen, hashmap_t *SideExitBB
 	case OPCODE_IGuardTypeArray: {
 	    IGuardTypeArray *ir = (IGuardTypeArray *)Inst;
 	    long exit_block_id = get_sideexit_id(SideExitBBs, ir->Exit);
-	    cgen_printf(gen, "if(!(RBASIC_CLASS(v%ld) == jit_context->cArray)) {\n"
+	    cgen_printf(gen, "if(!(RBASIC_CLASS(v%ld) == local_jit_runtime->cArray)) {\n"
 	                     "  goto L_exit%ld;\n"
 	                     "}\n",
 	                lir_getid(ir->R), exit_block_id);
@@ -240,7 +240,7 @@ static void compile_inst(trace_recorder_t *Rec, CGen *gen, hashmap_t *SideExitBB
 	case OPCODE_IGuardTypeString: {
 	    IGuardTypeString *ir = (IGuardTypeString *)Inst;
 	    long exit_block_id = get_sideexit_id(SideExitBBs, ir->Exit);
-	    cgen_printf(gen, "if(!(RBASIC_CLASS(v%ld) == jit_context->cString)) {\n"
+	    cgen_printf(gen, "if(!(RBASIC_CLASS(v%ld) == local_jit_runtime->cString)) {\n"
 	                     "  goto L_exit%ld;\n"
 	                     "}\n",
 	                lir_getid(ir->R), exit_block_id);
@@ -249,7 +249,7 @@ static void compile_inst(trace_recorder_t *Rec, CGen *gen, hashmap_t *SideExitBB
 	case OPCODE_IGuardTypeHash: {
 	    IGuardTypeHash *ir = (IGuardTypeHash *)Inst;
 	    long exit_block_id = get_sideexit_id(SideExitBBs, ir->Exit);
-	    cgen_printf(gen, "if(!(RBASIC_CLASS(v%ld) == jit_context->cHash)) {\n"
+	    cgen_printf(gen, "if(!(RBASIC_CLASS(v%ld) == local_jit_runtime->cHash)) {\n"
 	                     "  goto L_exit%ld;\n"
 	                     "}\n",
 	                lir_getid(ir->R), exit_block_id);
@@ -258,7 +258,7 @@ static void compile_inst(trace_recorder_t *Rec, CGen *gen, hashmap_t *SideExitBB
 	case OPCODE_IGuardTypeRegexp: {
 	    IGuardTypeRegexp *ir = (IGuardTypeRegexp *)Inst;
 	    long exit_block_id = get_sideexit_id(SideExitBBs, ir->Exit);
-	    cgen_printf(gen, "if(!(RBASIC_CLASS(v%ld) == jit_context->cRegexp)) {\n"
+	    cgen_printf(gen, "if(!(RBASIC_CLASS(v%ld) == local_jit_runtime->cRegexp)) {\n"
 	                     "  goto L_exit%ld;\n"
 	                     "}\n",
 	                lir_getid(ir->R), exit_block_id);
@@ -267,7 +267,7 @@ static void compile_inst(trace_recorder_t *Rec, CGen *gen, hashmap_t *SideExitBB
 	case OPCODE_IGuardTypeTime: {
 	    IGuardTypeTime *ir = (IGuardTypeTime *)Inst;
 	    long exit_block_id = get_sideexit_id(SideExitBBs, ir->Exit);
-	    cgen_printf(gen, "if(!(RBASIC_CLASS(v%ld) == jit_context->cTime)) {\n"
+	    cgen_printf(gen, "if(!(RBASIC_CLASS(v%ld) == local_jit_runtime->cTime)) {\n"
 	                     "  goto L_exit%ld;\n"
 	                     "}\n",
 	                lir_getid(ir->R), exit_block_id);
@@ -276,7 +276,7 @@ static void compile_inst(trace_recorder_t *Rec, CGen *gen, hashmap_t *SideExitBB
 	case OPCODE_IGuardTypeMath: {
 	    IGuardTypeMath *ir = (IGuardTypeMath *)Inst;
 	    long exit_block_id = get_sideexit_id(SideExitBBs, ir->Exit);
-	    cgen_printf(gen, "if(!(RBASIC_CLASS(v%ld) == jit_context->cMath)) {\n"
+	    cgen_printf(gen, "if(!(RBASIC_CLASS(v%ld) == local_jit_runtime->cMath)) {\n"
 	                     "  goto L_exit%ld;\n"
 	                     "}\n",
 	                lir_getid(ir->R), exit_block_id);
@@ -1119,7 +1119,7 @@ static void prepare_side_exit(trace_recorder_t *rec, CGen *gen, hashmap_t *SideE
 	VALUE *pc = (VALUE *)itr.entry->key;
 	hashmap_set(SideExitBBs, (hashmap_data_t)pc, (j << 1));
 	cgen_printf(gen,
-	            "static TraceSideExitHandler side_exit_handler_%ld = {\n"
+	            "static trace_side_exit_handler_t side_exit_handler_%ld = {\n"
 	            " .exit_pc = (VALUE *) %p,\n"
 	            " .this_trace = 0,\n"
 	            " .child_trace = 0\n"
@@ -1137,7 +1137,7 @@ static void compile_prologue(trace_recorder_t *rec, trace_t *trace, hashmap_t *S
                 "#include <assert.h>\n"
                 "#include <dlfcn.h>\n"
                 "#define BLOCK_LABEL(label) L_##label:;(void)&&L_##label;\n"
-                "const gwjit_context_t *jit_context = NULL;\n");
+                "const jit_runtime_t *local_jit_runtime = NULL;\n");
 
     if (JIT_DUMP_COMPILE_LOG > 0) {
 	const rb_iseq_t *iseq = trace->iseq;
@@ -1152,9 +1152,9 @@ static void compile_prologue(trace_recorder_t *rec, trace_t *trace, hashmap_t *S
     prepare_side_exit(rec, gen, SideExitBBs);
 
     cgen_printf(gen,
-                "void init_gwjit_%d(const gwjit_context_t *ctx, struct trace_t *t)"
+                "void init_gwjit_%d(const jit_runtime_t *ctx, struct jit_trace *t)"
                 "{\n"
-                "  jit_context = ctx;\n"
+                "  local_jit_runtime = ctx;\n"
                 "  (void) make_no_method_exception;\n"
                 //"  (void) jit_vm_call_iseq_setup_normal;\n"
                 //"  (void) jit_vm_yield_setup_block_args;\n"
@@ -1167,7 +1167,7 @@ static void compile_prologue(trace_recorder_t *rec, trace_t *trace, hashmap_t *S
     }
     cgen_printf(gen, "}\n");
 
-    cgen_printf(gen, "TraceSideExitHandler *gwjit_%d(rb_thread_t *th,\n"
+    cgen_printf(gen, "trace_side_exit_handler_t *gwjit_%d(rb_thread_t *th,\n"
                      "    rb_control_frame_t *reg_cfp)\n"
                      "{\n"
                      "  VALUE *original_sp = GET_SP();\n"
@@ -1219,7 +1219,7 @@ static void trace_compile(trace_recorder_t *rec, trace_t *trace)
 
     assert(serial_id < 100 && "too many compiled trace");
     if (id == 0) {
-	//gwjit_context_init();
+	//gwlocal_jit_runtime_init();
     }
 
     snprintf(fname, 128, "gwjit_%d", id);

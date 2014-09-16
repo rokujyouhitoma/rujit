@@ -76,4 +76,12 @@ enum JIT_BOP {
     JIT_BOP_EXT_LAST_
 };
 
+typedef struct trace_side_exit_handler trace_side_exit_handler_t;
+
+struct trace_side_exit_handler {
+    struct jit_trace *this_trace;
+    struct jit_trace *child_trace;
+    VALUE *exit_pc;
+};
+
 #endif /* end of include guard */

@@ -925,7 +925,8 @@ static void record_once(trace_recorder_t *rec, jit_event_t *e)
     //ISEQ iseq = (ISEQ)GET_OPERAND(1);
     union iseq_inline_storage_entry *is = (union iseq_inline_storage_entry *)ic;
 
-    if (is->once.done == Qfalse) {
+#define RUNNING_THREAD_ONCE_DONE ((rb_thread_t *)(0x1))
+    if (is->once.running_thread != RUNNING_THREAD_ONCE_DONE) {
 	not_support_op(rec, e, "once");
     }
     else {

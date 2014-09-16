@@ -846,7 +846,8 @@ jit_prelude.c: $(srcdir)/tool/compile_prelude.rb $(srcdir)/jit_prelude.rb
 	$(Q) $(BASERUBY) -I$(srcdir) $(srcdir)/tool/compile_prelude.rb $(srcdir)/jit_prelude.rb $@
 
 jit_cgen_cmd.h: {$(VPATH)}ruby_jit.h $(srcdir)/make_pch.rb \
-	{$(VPATH)}lir_template.h {$(VPATH)}vm_exec.h
+	{$(VPATH)}lir_template.h {$(VPATH)}vm_exec.h \
+	{$(VPATH)}jit.c {$(VPATH)}jit.h
 	$(Q) $(BASERUBY) $(srcdir)/make_pch.rb . $(srcdir) $(CC) $(arch) > $@
 
 jit.$(OBJEXT): {$(VPATH)}jit.c {$(VPATH)}jit_opts.h \
