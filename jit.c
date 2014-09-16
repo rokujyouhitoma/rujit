@@ -291,7 +291,7 @@ static void jit_profile(const char *msg, int print_log)
     last = time;
 }
 
-static jit_event_t *jit_init_event(jit_event_t *e, rb_jit_t *jit, rb_thread_t *th, rb_control_frame_t *cfp, VALUE *pc)
+static jit_event_t *jit_event_init(jit_event_t *e, rb_jit_t *jit, rb_thread_t *th, rb_control_frame_t *cfp, VALUE *pc)
 {
     e->th = th;
     e->cfp = cfp;
@@ -775,9 +775,10 @@ static void regstack_set(regstack_t *stack, int n, lir_t reg)
 static lir_t regstack_top(regstack_t *stack, int n)
 {
     lir_t reg;
+    n = stack->list.size - n - 1;
     assert(0 <= n && n < (int)stack->list.size);
     reg = (lir_t)jit_list_get(&stack->list, n);
-    if (reg == NULL && n < LIR_RESERVED_REGSTACK_SIZE) {
+    if (reg == NULL) {
 	assert(0 && "FIXME stack underflow");
     }
     assert(reg != NULL);
@@ -1628,7 +1629,7 @@ VALUE *rb_jit_trace(rb_thread_t *th, rb_control_frame_t *reg_cfp, VALUE *reg_pc)
 	return reg_pc;
     }
     jit_event_t ebuf;
-    jit_event_t *e = jit_init_event(&ebuf, current_jit, th, reg_cfp, reg_pc);
+    jit_event_t *e = jit_event_init(&ebuf, current_jit, th, reg_cfp, reg_pc);
     return trace_selection(current_jit, e);
 }
 
