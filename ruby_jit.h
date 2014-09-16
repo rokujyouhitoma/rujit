@@ -131,6 +131,11 @@ static inline VALUE jit_rb_class_of(VALUE obj)
     return RBASIC(obj)->klass;
 }
 
+static inline void jit_vm_pop_frame(rb_thread_t *th)
+{
+    th->cfp = RUBY_VM_PREVIOUS_CONTROL_FRAME(th->cfp);
+}
+
 #endif
 #include "lir_template.h"
 #endif /* end of include guard */

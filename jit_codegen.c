@@ -1054,7 +1054,7 @@ static void compile_inst(trace_recorder_t *Rec, CGen *gen, hashmap_t *SideExitBB
 	}
 	case OPCODE_IFramePop: {
 	    // IFramePop *ir = (IFramePop *) Inst;
-	    cgen_printf(gen, "vm_pop_frame(th);\n"
+	    cgen_printf(gen, "jit_vm_pop_frame(th);\n"
 	                     "reg_cfp = th->cfp;\n");
 	    break;
 	}
