@@ -131,11 +131,113 @@ static inline VALUE jit_rb_class_of(VALUE obj)
     return RBASIC(obj)->klass;
 }
 
+static inline void vm_stackoverflow(void)
+{
+    rb_exc_raise(sysstack_error);
+}
+
+static inline rb_control_frame_t *
+jit_vm_push_frame(rb_thread_t *th,
+                  const rb_iseq_t *iseq,
+                  VALUE type,
+                  VALUE self,
+                  VALUE klass,
+                  VALUE specval,
+                  const VALUE *pc,
+                  VALUE *sp,
+                  int local_size,
+                  const rb_method_entry_t *me,
+                  int stack_max)
+{
+    rb_control_frame_t *const cfp = th->cfp - 1;
+    int i;
+
+    /* check stack overflow */
+    CHECK_VM_STACK_OVERFLOW0(cfp, sp, local_size + stack_max);
+
+    th->cfp = cfp;
+
+    /* setup vm value stack */
+
+    /* initialize local variables */
+    for (i = 0; i < local_size; i++) {
+	*sp++ = Qnil;
+    }
+
+    /* set special val */
+    *sp = specval;
+
+    /* setup vm control frame stack */
+
+    cfp->pc = (VALUE *)pc;
+    cfp->sp = sp + 1;
+#if VM_DEBUG_BP_CHECK
+    cfp->bp_check = sp + 1;
+#endif
+    cfp->ep = sp;
+    cfp->iseq = (rb_iseq_t *)iseq;
+    cfp->flag = type;
+    cfp->self = self;
+    cfp->block_iseq = 0;
+    cfp->proc = 0;
+    cfp->me = me;
+    if (klass) {
+	cfp->klass = klass;
+    }
+    else {
+	rb_control_frame_t *prev_cfp = RUBY_VM_PREVIOUS_CONTROL_FRAME(cfp);
+	if (RUBY_VM_CONTROL_FRAME_STACK_OVERFLOW_P(th, prev_cfp)) {
+	    cfp->klass = Qnil;
+	}
+	else {
+	    cfp->klass = prev_cfp->klass;
+	}
+    }
+
+    if (VMDEBUG == 2) {
+	SDR();
+    }
+
+    return cfp;
+}
+
+static inline void
+vm_pop_frame(rb_thread_t *th)
+{
+    th->cfp = RUBY_VM_PREVIOUS_CONTROL_FRAME(th->cfp);
+
+    if (VMDEBUG == 2) {
+	SDR();
+    }
+}
+
 static inline void jit_vm_pop_frame(rb_thread_t *th)
 {
     th->cfp = RUBY_VM_PREVIOUS_CONTROL_FRAME(th->cfp);
 }
+static VALUE jit_vm_call_iseq_setup_normal(rb_thread_t *th, rb_control_frame_t *cfp, CALL_INFO ci, int argc)
+{
+    int i, local_size;
+    VALUE *argv = cfp->sp - ci->argc;
+    rb_iseq_t *iseq = ci->me->def->body.iseq;
+    VALUE *sp = argv + iseq->arg_size;
+
+    /* clear local variables (arg_size...local_size) */
+    for (i = iseq->arg_size, local_size = iseq->local_size; i < local_size;
+         i++) {
+	*sp++ = Qnil;
+    }
+
+    jit_vm_push_frame(th, iseq, VM_FRAME_MAGIC_METHOD, ci->recv, ci->defined_class,
+                      VM_ENVVAL_BLOCK_PTR(ci->blockptr),
+                      iseq->iseq_encoded + ci->aux.opt_pc, sp, 0, ci->me,
+                      iseq->stack_max);
+
+    cfp->sp = argv - 1 /* recv */;
+    return Qundef;
+}
 
 #endif
 #include "lir_template.h"
+#define __int3__ asm volatile("int3");
 #endif /* end of include guard */

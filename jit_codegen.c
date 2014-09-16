@@ -181,6 +181,46 @@ static long get_sideexit_id(hashmap_t *sideexits, VALUE *pc)
     cgen_printf(gen, "v%ld = rb_jit_exec_" #OP "(v%ld);\n", \
                 (VAL), lir_getid(ARG))
 
+static void EmitFramePush(trace_recorder_t *rec, CGen *gen, IFramePush *ir, int side_exit)
+{
+    int i, begin = ir->invokeblock ? 1 : 0;
+    cgen_printf(gen, "{\n"
+                     "  CALL_INFO ci = (CALL_INFO) %p;\n"
+                     "  SET_PC((VALUE *) %p);\n",
+                ir->ci, ir->PC);
+    if (!side_exit) {
+	for (i = begin; i < ir->argc; i++) {
+	    cgen_printf(gen, "(GET_SP())[%d] = v%ld;\n",
+	                i - begin, lir_getid(ir->argv[i]));
+	}
+	cgen_printf(gen, "  SET_SP(GET_SP() + %d);\n", ir->argc - ir->invokeblock);
+    }
+    if (ir->invokeblock) {
+	cgen_printf(gen,
+	            "  ci->argc = ci->orig_argc;\n"
+	            "  ci->blockptr = 0;\n"
+	            "  ci->recv = v%ld;\n"
+	            "  jit_vm_call_block_setup(th, reg_cfp,\n"
+	            "                          (rb_block_t *) v%ld, ci, %d);\n"
+	            "  reg_cfp = th->cfp;\n",
+	            lir_getid(ir->argv[0]), lir_getid(ir->block), ir->argc - 1);
+    }
+    else {
+	if (ir->block != 0) {
+	    cgen_printf(gen, "  ci->blockptr = (rb_block_t *) v%ld;\n"
+	                     "  assert(ci->blockptr != 0);\n"
+	                     "  ci->blockptr->iseq = ci->blockiseq;\n"
+	                     "  ci->blockptr->proc = 0;\n",
+	                lir_getid(ir->block));
+	}
+	cgen_printf(gen,
+	            "  jit_vm_call_iseq_setup_normal(th, reg_cfp, ci, %d);\n"
+	            "  reg_cfp = th->cfp;\n",
+	            ir->argc - 1);
+    }
+    cgen_printf(gen, "}\n");
+}
+
 static void compile_inst(trace_recorder_t *Rec, CGen *gen, hashmap_t *SideExitBBs, lir_inst_t *Inst)
 {
     long Id = lir_getid(Inst);
@@ -1048,8 +1088,7 @@ static void compile_inst(trace_recorder_t *Rec, CGen *gen, hashmap_t *SideExitBB
 	}
 	case OPCODE_IFramePush: {
 	    IFramePush *ir = (IFramePush *)Inst;
-	    assert(0 && "not implemented");
-	    //EmitFramePush(Rec, gen, ir, 0);
+	    EmitFramePush(Rec, gen, ir, 0);
 	    break;
 	}
 	case OPCODE_IFramePop: {
@@ -1191,7 +1230,7 @@ static void compile_sideexit(trace_recorder_t *rec, trace_t *trace, CGen *gen, h
 	long block_id = itr.entry->val >> 1;
 	regstack_t *stack = (regstack_t *)hashmap_get(&rec->stack_map, (hashmap_data_t)pc);
 	cgen_printf(gen, "L_exit%ld:;\n", block_id);
-	cgen_printf(gen, "//fprintf(stderr,\"exit%ld : pc=%p\\n\");\n", block_id, pc);
+	//cgen_printf(gen, "__int3__;fprintf(stderr,\"exit%ld : pc=%p\\n\");\n", block_id, pc);
 
 	j = 0;
 	cgen_printf(gen, "th->cfp = reg_cfp = original_cfp;\n");
@@ -1202,8 +1241,7 @@ static void compile_sideexit(trace_recorder_t *rec, trace_t *trace, CGen *gen, h
 		if (lir_opcode(inst) == OPCODE_IFramePush) {
 		    IFramePush *ir = (IFramePush *)inst;
 		    cgen_printf(gen, "SET_SP(GET_SP() + %d);\n", j);
-		    assert(0 && "FIXME");
-		    //EmitFramePush(Rec, gen, ir, 1);
+		    EmitFramePush(rec, gen, ir, 1);
 		    j = 0;
 		}
 		else {

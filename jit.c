@@ -421,6 +421,7 @@ static void memory_pool_reset(struct memory_pool *mp, int alloc_memory)
 	page = root->next;
 	while (page != NULL) {
 	    struct page_chunk *next = page->next;
+	    memset(page, -1, sizeof(struct page_chunk));
 	    free(page);
 	    page = next;
 	}
@@ -568,6 +569,10 @@ static inline uintptr_t lir_getid(lir_t ir)
 {
     return ir->id;
 }
+static inline uintptr_t lir_getid_null(lir_t ir)
+{
+    return ir ? lir_getid(ir) : -1;
+}
 
 static void *lir_inst_init(void *ptr, unsigned opcode)
 {
@@ -651,7 +656,7 @@ static lir_t basicblock_get_terminator(basicblock_t *bb)
 
 static void basicblock_set_callstack(struct memory_pool *mpool, basicblock_t *bb, basicblock_t *old)
 {
-    if (old == NULL || old->call_stack) {
+    if (old == NULL || old->call_stack == NULL) {
 	bb->call_stack = call_stack_new(mpool);
     }
     else {
@@ -777,14 +782,14 @@ static void regstack_delete(regstack_t *stack)
 /* variable_table { */
 typedef struct variable_table {
     jit_list_t table;
-    int level;
+    lir_t first_inst;
 } variable_table_t;
 
-static variable_table_t *variable_table_init(struct memory_pool *mp, int level)
+static variable_table_t *variable_table_init(struct memory_pool *mp, lir_t inst)
 {
     variable_table_t *vtable;
     vtable = (variable_table_t *)memory_pool_alloc(mp, sizeof(*vtable));
-    vtable->level = level;
+    vtable->first_inst = inst;
     return vtable;
 }
 static void variable_table_expand(variable_table_t *vtable, unsigned idx)
@@ -1629,7 +1634,7 @@ VALUE *rb_jit_trace(rb_thread_t *th, rb_control_frame_t *reg_cfp, VALUE *reg_pc,
 #define DATA(T, V) DATA_##T(V)
 #define DATA_int(V) (V)
 #define DATA_long(V) (V)
-#define DATA_lir_t(V) (lir_getid(V))
+#define DATA_lir_t(V) (lir_getid_null(V))
 #define DATA_LirPtr(V) (lir_getid(*(V)))
 #define DATA_VALUE(V) (V)
 #define DATA_VALUEPtr(V) (V)
