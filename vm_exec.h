@@ -84,7 +84,7 @@ error !
 #ifndef DISABLE_JIT
 #define JIT_TRACE(insn) do {\
   VALUE *CUR_PC = GET_PC();\
-  VALUE *NEW_PC = rb_jit_trace(th, GET_CFP(), CUR_PC);\
+  VALUE *NEW_PC = rb_jit_trace(th, GET_CFP(), CUR_PC, BIN(insn));\
   if(NEW_PC != CUR_PC) {\
     /*DEBUG_JIT_DISPATCH(NEW_PC, CUR_PC);*/\
     RESTORE_REGS();\

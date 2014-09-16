@@ -975,7 +975,7 @@ static void compile_inst(trace_recorder_t *Rec, CGen *gen, hashmap_t *SideExitBB
 	case OPCODE_IInvokeNative: {
 	    int i;
 	    IInvokeNative *ir = (IInvokeNative *)Inst;
-	    cgen_printf(gen, "  v%ld = ((ruby_jit_native_func%d_t)%p)(", Id, ir->argc,
+	    cgen_printf(gen, "  v%ld = ((jit_native_func%d_t)%p)(", Id, ir->argc,
 	                ir->fptr);
 	    for (i = 0; i < ir->argc; i++) {
 		if (i != 0) {

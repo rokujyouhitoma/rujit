@@ -231,29 +231,6 @@ struct rb_jit_t {
     jit_list_t method_cache;
 };
 
-static int vm_insn_addr2insn(const VALUE val)
-{
-    int insn;
-    const void *const *table = rb_vm_get_insns_address_table();
-    const void *addr = (const void *)val;
-    for (insn = 0; insn < VM_INSTRUCTION_SIZE; insn++) {
-	if (table[insn] == addr) {
-	    return insn;
-	}
-    }
-    rb_bug("vm_insn_addr2insn: invalid insn address: %p", addr);
-}
-
-static int get_opcode(rb_control_frame_t *cfp, VALUE *reg_pc)
-{
-    long pc = (reg_pc - cfp->iseq->iseq_encoded);
-    int op = vm_insn_addr2insn(cfp->iseq->iseq_encoded[pc]);
-    assert(0 <= op && op < VM_INSTRUCTION_SIZE);
-    return op;
-}
-
-static int get_opcode(rb_control_frame_t *cfp, VALUE *pc);
-
 static void dump_inst(jit_event_t *e)
 {
     if (DUMP_INST > 0) {
@@ -291,13 +268,13 @@ static void jit_profile(const char *msg, int print_log)
     last = time;
 }
 
-static jit_event_t *jit_event_init(jit_event_t *e, rb_jit_t *jit, rb_thread_t *th, rb_control_frame_t *cfp, VALUE *pc)
+static jit_event_t *jit_event_init(jit_event_t *e, rb_jit_t *jit, rb_thread_t *th, rb_control_frame_t *cfp, VALUE *pc, int opcode)
 {
     e->th = th;
     e->cfp = cfp;
     e->pc = pc;
     e->trace = jit->current_trace;
-    e->opcode = get_opcode(e->cfp, e->pc);
+    e->opcode = opcode;
     return e;
 }
 
@@ -1623,13 +1600,13 @@ static VALUE *trace_selection(rb_jit_t *jit, jit_event_t *e)
     return e->pc;
 }
 
-VALUE *rb_jit_trace(rb_thread_t *th, rb_control_frame_t *reg_cfp, VALUE *reg_pc)
+VALUE *rb_jit_trace(rb_thread_t *th, rb_control_frame_t *reg_cfp, VALUE *reg_pc, int opcode)
 {
     if (disable_jit) {
 	return reg_pc;
     }
     jit_event_t ebuf;
-    jit_event_t *e = jit_event_init(&ebuf, current_jit, th, reg_cfp, reg_pc);
+    jit_event_t *e = jit_event_init(&ebuf, current_jit, th, reg_cfp, reg_pc, opcode);
     return trace_selection(current_jit, e);
 }
 

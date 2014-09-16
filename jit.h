@@ -11,7 +11,7 @@
 #ifndef RUBY_JIT_H
 #define RUBY_JIT_H 1
 
-extern VALUE *rb_jit_trace(rb_thread_t *, rb_control_frame_t *, VALUE *);
+extern VALUE *rb_jit_trace(rb_thread_t *, rb_control_frame_t *reg_cfp, VALUE *reg_pc, int opcode);
 extern void rb_jit_check_redefinition_opt_method(const rb_method_entry_t *me, VALUE klass);
 
 struct rb_vm_global_state {
