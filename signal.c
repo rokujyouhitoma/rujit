@@ -1315,6 +1315,7 @@ int ruby_enable_coredump = 0;
 void
 Init_signal(void)
 {
+#if 0
     VALUE mSignal = rb_define_module("Signal");
 
     rb_define_global_function("trap", sig_trap, -1);
@@ -1366,5 +1367,6 @@ Init_signal(void)
     init_sigchld(SIGCLD);
 #elif defined(SIGCHLD)
     init_sigchld(SIGCHLD);
+#endif
 #endif
 }
