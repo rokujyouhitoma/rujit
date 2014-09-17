@@ -291,17 +291,17 @@ static lir_inst_t *fold_string_add(trace_recorder_t *rec, lir_folder_t folder, l
     return inst;
 }
 
-static lir_inst_t *add_const_pool(trace_recorder_t *rec, lir_inst_t *inst)
-{
-    VALUE val;
-    if (lir_opcode(inst) == OPCODE_ILoadConstNil) {
-	val = Qnil;
-    }
-    else {
-	val = ((ILoadConstObject *)inst)->Val;
-    }
-    return trace_recorder_add_const(rec, val, inst);
-}
+// static lir_inst_t *add_const_pool(trace_recorder_t *rec, lir_inst_t *inst)
+// {
+//     VALUE val;
+//     if (lir_opcode(inst) == OPCODE_ILoadConstNil) {
+// 	val = Qnil;
+//     }
+//     else {
+// 	val = ((ILoadConstObject *)inst)->Val;
+//     }
+//     return trace_recorder_add_const(rec, val, inst);
+// }
 
 static lir_inst_t *constant_fold_inst(trace_recorder_t *rec, lir_inst_t *inst)
 {

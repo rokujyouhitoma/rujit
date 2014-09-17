@@ -1429,13 +1429,16 @@ static void jit_delete(rb_jit_t *jit)
 	free(jit);
 
 #ifdef ENABLE_PROFILE_TRACE_JIT
-	fprintf(stderr, "invoke_enter  %llu\n", invoke_trace_enter);
-	fprintf(stderr, "invoke_invoke %llu\n", invoke_trace_invoke);
-	fprintf(stderr, "invoke_child1 %llu\n", invoke_trace_child1);
-	fprintf(stderr, "invoke_child2 %llu\n", invoke_trace_child2);
-	fprintf(stderr, "invoke_exit   %llu\n", invoke_trace_exit);
-	fprintf(stderr, "invoke_side   %llu\n", invoke_trace_side_exit);
-	fprintf(stderr, "invoke_succ   %llu\n", invoke_trace_success);
+#define DUMP_COUNT(COUNTER) \
+    fprintf(stderr, #COUNTER "  %" PRIu64 "\n", invoke_##COUNTER)
+	DUMP_COUNT(trace_enter);
+	DUMP_COUNT(trace_invoke);
+	DUMP_COUNT(trace_child1);
+	DUMP_COUNT(trace_child2);
+	DUMP_COUNT(trace_exit);
+	DUMP_COUNT(trace_side_exit);
+	DUMP_COUNT(trace_success);
+#undef DUMP_COUNT
 #endif
     }
 }
