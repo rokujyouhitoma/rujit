@@ -47,11 +47,6 @@ VALUE rb_float_new_in_heap(double d)
     return JIT_RUNTIME->_rb_float_new_in_heap(d);
 }
 
-void rb_gc_writebarrier(VALUE a, VALUE b)
-{
-    return JIT_RUNTIME->_rb_gc_writebarrier(a, b);
-}
-
 static inline VALUE make_no_method_exception(VALUE exc, const char *format,
                                              VALUE obj, int argc,
                                              const VALUE *argv)

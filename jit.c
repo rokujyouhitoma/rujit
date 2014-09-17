@@ -1343,7 +1343,10 @@ static void jit_runtime_init(struct rb_vm_global_state *global_state_ptr)
 
     jit_runtime._ruby_current_vm = ruby_current_vm;
     jit_runtime._make_no_method_exception = make_no_method_exception;
-    jit_runtime._rb_gc_writebarrier = rb_gc_writebarrier_generational;
+#if USE_RGENGC
+    jit_runtime._rb_gc_writebarrier_incremental = rb_gc_writebarrier_incremental;
+    jit_runtime._rb_gc_writebarrier_generational = rb_gc_writebarrier_generational;
+#endif
 
     jit_runtime.redefined_flag = jit_vm_redefined_flag;
 
@@ -1584,6 +1587,7 @@ static int is_tracable_call_inst(jit_event_t *e)
 	return 1;
     }
 
+    asm volatile("int3");
     if (is_tracable_special_inst(e->opcode, ci)) {
 	return 1;
     }

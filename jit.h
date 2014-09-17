@@ -72,7 +72,10 @@ typedef struct jit_runtime_struct {
     VALUE (*_rb_float_new_in_heap)(double);
     VALUE (*_rb_ary_entry)(VALUE, long);
     void (*_rb_ary_store)(VALUE, long, VALUE);
-    void (*_rb_gc_writebarrier)(VALUE a, VALUE b);
+#if USE_RGENGC
+    int (*_rb_gc_writebarrier_incremental)(VALUE, VALUE);
+    void (*_rb_gc_writebarrier_generational)(VALUE, VALUE);
+#endif
 #if SIZEOF_INT < SIZEOF_VALUE
     NORETURN(void (*_rb_out_of_int)(SIGNED_VALUE num));
 #endif
