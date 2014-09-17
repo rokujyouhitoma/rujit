@@ -1118,7 +1118,6 @@ static void trace_unlink(trace_t *trace)
 
 static void compile_trace(rb_jit_t *jit, trace_recorder_t *rec)
 {
-    dump_trace(rec);
     if (trace_recorder_inst_size(rec) > LIR_MIN_TRACE_LENGTH) {
 	trace_t *trace = jit->current_trace;
 	trace_optimize(rec, trace);
