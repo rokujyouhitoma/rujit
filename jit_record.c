@@ -933,9 +933,11 @@ static void record_opt_case_dispatch(trace_recorder_t *rec, jit_event_t *e)
     OFFSET else_offset = (OFFSET)GET_OPERAND(2);
     CDHASH hash = (CDHASH)GET_OPERAND(1);
     VALUE key = TOPN(0);
+    int type;
+    st_data_t val;
 
     trace_recorder_take_snapshot(rec, REG_PC);
-    int type = TYPE(key);
+    type = TYPE(key);
     switch (type) {
 	case T_FLOAT: {
 	    // FIXME
@@ -967,7 +969,6 @@ static void record_opt_case_dispatch(trace_recorder_t *rec, jit_event_t *e)
 		    EmitIR(GuardTypeString, REG_PC, Rkey);
 		    EmitIR(GuardMethodRedefine, REG_PC, STRING_REDEFINED_OP_FLAG, BOP_EQQ);
 		}
-		st_data_t val;
 		// We assume `hash` is constant variable
 		if (st_lookup(RHASH_TBL_RAW(hash), key, &val)) {
 		    VALUE *dst = REG_PC + insn_len(BIN(opt_case_dispatch))

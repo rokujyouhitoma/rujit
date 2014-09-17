@@ -10,6 +10,7 @@
 
 #include <dlfcn.h> // dlopen, dlclose, dlsym
 #include <sys/time.h> // gettimeofday
+#include <stdio.h> // popen, pclose
 #include "ruby/ruby.h"
 #include "ruby/vm.h"
 #include "gc.h"
@@ -273,7 +274,7 @@ static void jit_profile(const char *msg, int print_log)
     gettimeofday(&tv, NULL);
     time = tv.tv_sec * 1000 + tv.tv_usec / 1000;
     if (print_log) {
-	fprintf(stderr, "%s : %" PRI_LL_PREFIX "u msec\n", msg, (time - last));
+	fprintf(stderr, "%s : %u msec\n", msg, (unsigned)(time - last));
     }
     last = time;
 }
@@ -340,11 +341,12 @@ jit_redefinition_check_flag(VALUE klass)
 
 void rb_jit_check_redefinition_opt_method(const rb_method_entry_t *me, VALUE klass)
 {
+    st_data_t bop;
+    int flag;
     if (!disable_jit) {
 	return;
     }
-    st_data_t bop;
-    int flag = jit_redefinition_check_flag(klass);
+    flag = jit_redefinition_check_flag(klass);
     if (st_lookup(jit_opt_method_table, (st_data_t)me, &bop)) {
 	assert(flag != 0);
 	jit_vm_redefined_flag[bop] |= flag;
@@ -596,11 +598,11 @@ static void const_pool_delete(const_pool_t *self)
 /* } const pool */
 
 /* lir_inst {*/
-static inline uintptr_t lir_getid(lir_t ir)
+static inline long lir_getid(lir_t ir)
 {
     return ir->id;
 }
-static inline uintptr_t lir_getid_null(lir_t ir)
+static inline long lir_getid_null(lir_t ir)
 {
     return ir ? lir_getid(ir) : -1;
 }
@@ -1647,10 +1649,10 @@ static VALUE *trace_selection(rb_jit_t *jit, jit_event_t *e)
 
 VALUE *rb_jit_trace(rb_thread_t *th, rb_control_frame_t *reg_cfp, VALUE *reg_pc, int opcode)
 {
+    jit_event_t ebuf;
     if (disable_jit) {
 	return reg_pc;
     }
-    jit_event_t ebuf;
     jit_event_t *e = jit_event_init(&ebuf, current_jit, th, reg_cfp, reg_pc, opcode);
     return trace_selection(current_jit, e);
 }
