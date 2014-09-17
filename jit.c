@@ -123,6 +123,10 @@ struct memory_pool {
     unsigned size;
 };
 
+typedef struct bloom_filter {
+    uintptr_t bits;
+} bloom_filter_t;
+
 typedef struct jit_list {
     uintptr_t *list;
     unsigned size;
@@ -233,6 +237,7 @@ struct rb_jit_t {
     trace_recorder_t *recorder;
     trace_mode_t mode;
     hashmap_t traces;
+    bloom_filter_t filter;
     jit_list_t method_cache;
 };
 
@@ -460,6 +465,27 @@ static void *memory_pool_alloc(struct memory_pool *mp, size_t size)
     return ptr;
 }
 /* } memory pool */
+
+/* bloom_filter { */
+static bloom_filter_t *bloom_filter_init(bloom_filter_t *bm)
+{
+    bm->bits = 0;
+    return bm;
+}
+
+static void bloom_filter_add(bloom_filter_t *bm, uintptr_t bits)
+{
+    bm->bits |= bits;
+}
+
+static int bloom_filter_contains(bloom_filter_t *bm, uintptr_t bits)
+{
+    if ((bm->bits & bits) == bits) {
+	return 1;
+    }
+    return 0;
+}
+/* } bloom_filter */
 
 /* jit_list { */
 
@@ -1028,7 +1054,6 @@ static basicblock_t *trace_recorder_get_block(trace_recorder_t *rec, VALUE *pc)
 /* trace { */
 static trace_t *trace_new(jit_event_t *e, trace_side_exit_handler_t *parent)
 {
-    rb_control_frame_t *reg_cfp = e->cfp;
     trace_t *trace = (trace_t *)malloc(sizeof(*trace));
     memset(trace, 0, sizeof(*trace));
     trace->start_pc = e->pc;
@@ -1120,6 +1145,7 @@ static void compile_trace(rb_jit_t *jit, trace_recorder_t *rec)
 {
     if (trace_recorder_inst_size(rec) > LIR_MIN_TRACE_LENGTH) {
 	trace_t *trace = jit->current_trace;
+	// dump_trace(rec);
 	trace_optimize(rec, trace);
 	dump_trace(rec);
 	trace_compile(rec, trace);
@@ -1183,7 +1209,7 @@ static VALUE *trace_invoke(rb_jit_t *jit, jit_event_t *e, trace_t *trace)
     rb_thread_t *th = e->th;
     //JIT_PROFILE_ENTER("invoke trace");
     JIT_PROFILE_COUNT(invoke_trace_enter);
-_head:
+    //_head:
     JIT_PROFILE_COUNT(invoke_trace_invoke);
     handler = trace->code(th, cfp);
     if (JIT_LOG_SIDE_EXIT > 0) {
@@ -1226,8 +1252,8 @@ static int peephole(trace_recorder_t *rec, lir_inst_t *inst)
     return 0;
 }
 
-static lir_inst_t *constant_fold_inst(trace_recorder_t *recorder, lir_inst_t *inst);
-
+static lir_inst_t *constant_fold_inst(trace_recorder_t *, lir_inst_t *);
+static void record_insn(trace_recorder_t *ecorder, jit_event_t *e);
 static void update_userinfo(trace_recorder_t *rec, lir_inst_t *inst);
 static void dump_lir_inst(lir_inst_t *inst);
 
@@ -1381,6 +1407,7 @@ static rb_jit_t *jit_init()
     jit->recorder = trace_recorder_new();
     hashmap_init(&jit->traces, 1);
     rb_jit_init_redefined_flag();
+    bloom_filter_init(&jit->filter);
     jit_default_params_setup(jit);
     jit_list_init(&jit->method_cache);
     return jit;
@@ -1455,6 +1482,9 @@ static trace_t *create_new_trace(rb_jit_t *jit, jit_event_t *e, trace_side_exit_
 {
     trace_t *trace = trace_new(e, parent);
     if (!parent) {
+	if (JIT_USE_BLOOM_FILTER) {
+	    bloom_filter_add(&jit->filter, (uintptr_t)e->pc);
+	}
 	hashmap_set(&jit->traces, (hashmap_data_t)e->pc, (hashmap_data_t)trace);
     }
     return trace;
@@ -1462,6 +1492,11 @@ static trace_t *create_new_trace(rb_jit_t *jit, jit_event_t *e, trace_side_exit_
 
 static trace_t *find_trace(rb_jit_t *jit, jit_event_t *e)
 {
+    if (JIT_USE_BLOOM_FILTER) {
+	if (!bloom_filter_contains(&jit->filter, (uintptr_t)e->pc)) {
+	    return NULL;
+	}
+    }
     return (trace_t *)hashmap_get(&jit->traces, (hashmap_data_t)e->pc);
 }
 
@@ -1546,28 +1581,33 @@ static int is_irregular_event(jit_event_t *e)
 static int is_end_of_trace(trace_recorder_t *recorder, jit_event_t *e)
 {
     if (already_recorded_on_trace(e)) {
+	record_insn(recorder, e);
 	e->reason = TRACE_ERROR_ALREADY_RECORDED;
 	return 1;
     }
     if (trace_recorder_is_full(recorder)) {
 	e->reason = TRACE_ERROR_BUFFER_FULL;
+	trace_recorder_take_snapshot(recorder, REG_PC);
+	Emit_Exit(recorder, e->pc);
 	// TODO emit exit
 	return 1;
     }
     if (!is_tracable_call_inst(e)) {
 	e->reason = TRACE_ERROR_NATIVE_METHOD;
+	trace_recorder_take_snapshot(recorder, REG_PC);
+	Emit_Exit(recorder, e->pc);
 	// TODO emit exit
 	return 1;
     }
     if (is_irregular_event(e)) {
 	e->reason = TRACE_ERROR_THROW;
+	trace_recorder_take_snapshot(recorder, REG_PC);
+	Emit_Exit(recorder, e->pc);
 	// TODO emit exit
 	return 1;
     }
     return 0;
 }
-
-static void record_insn(trace_recorder_t *ecorder, jit_event_t *e);
 
 static VALUE *trace_selection(rb_jit_t *jit, jit_event_t *e)
 {
@@ -1575,7 +1615,6 @@ static VALUE *trace_selection(rb_jit_t *jit, jit_event_t *e)
     VALUE *target_pc = NULL;
     if (is_recording(jit)) {
 	if (is_end_of_trace(jit->recorder, e)) {
-	    record_insn(jit->recorder, e);
 	    compile_trace(jit, jit->recorder);
 	    stop_recording(jit);
 	}

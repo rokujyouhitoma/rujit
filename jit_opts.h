@@ -36,5 +36,7 @@
 #define LIR_CACHE_ENV_OPERATION 0 /* 0:disable, 1:cache env_load/env_store */
 #define HOT_TRACE_THRESHOLD 4
 
+#define JIT_USE_BLOOM_FILTER 1
+
 #define ENABLE_PROFILE_TRACE_JIT
 #endif /* end of include guard */
