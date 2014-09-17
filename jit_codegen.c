@@ -49,8 +49,10 @@ static int buffer_printf(buffer_t *buf, const char *fmt, va_list ap)
 
 static void buffer_flush(FILE *fp, buffer_t *buf)
 {
-    fputs((char *)buf->buf.list, fp);
-    buf->buf.size = 0;
+    if (buf->buf.size) {
+	fputs((char *)buf->buf.list, fp);
+	buf->buf.size = 0;
+    }
 }
 
 static void buffer_dispose(buffer_t *buf)
@@ -1223,7 +1225,7 @@ static void compile_sideexit(trace_recorder_t *rec, trace_t *trace, CGen *gen, h
        sp[0..n] = StackMap[0..n]
      * return PC;
      */
-    int i, j;
+    unsigned i, j;
     hashmap_iterator_t itr = { 0, 0 };
     while (hashmap_next(SideExitBBs, &itr)) {
 	VALUE *pc = (VALUE *)itr.entry->key;
@@ -1240,19 +1242,19 @@ static void compile_sideexit(trace_recorder_t *rec, trace_t *trace, CGen *gen, h
 	    if (inst) {
 		if (lir_opcode(inst) == OPCODE_IFramePush) {
 		    IFramePush *ir = (IFramePush *)inst;
-		    cgen_printf(gen, "SET_SP(GET_SP() + %d);\n", j);
+		    cgen_printf(gen, "SET_SP(GET_SP() + %u);\n", j);
 		    EmitFramePush(rec, gen, ir, 1);
 		    j = 0;
 		}
 		else {
 		    lir_t ir = (lir_t)stack->list.list[i];
-		    cgen_printf(gen, "(GET_SP())[%d] = v%ld;\n", j, lir_getid(ir));
+		    cgen_printf(gen, "(GET_SP())[%u] = v%ld;\n", j, lir_getid(ir));
 		    j++;
 		}
 	    }
 	}
 
-	cgen_printf(gen, "SET_SP(GET_SP() + %d);\n"
+	cgen_printf(gen, "SET_SP(GET_SP() + %u);\n"
 	                 "return &side_exit_handler_%ld;\n",
 	            j, block_id);
     }
