@@ -8,9 +8,6 @@
 
 **********************************************************************/
 
-#include <dlfcn.h> // dlopen, dlclose, dlsym
-#include <sys/time.h> // gettimeofday
-#include <stdio.h> // popen, pclose
 #include "ruby/ruby.h"
 #include "ruby/vm.h"
 #include "gc.h"
@@ -30,6 +27,9 @@
 #include "jit_hashmap.c"
 // static const char cmd_template[];
 #include "jit_cgen_cmd.h"
+
+#include <dlfcn.h> // dlopen, dlclose, dlsym
+#include <sys/time.h> // gettimeofday
 
 #define LOG(MSG, ...)                    \
     fprintf(stderr, MSG, ##__VA_ARGS__); \
@@ -254,13 +254,16 @@ static void dump_inst(jit_event_t *e)
 #define JIT_PROFILE_ENTER(msg) jit_profile((msg), 0)
 #define JIT_PROFILE_LEAVE(msg, cond) jit_profile((msg), (cond))
 #ifdef ENABLE_PROFILE_TRACE_JIT
-static uint64_t invoke_trace_enter = 0;
+static uint64_t invoke_trace_invoke_enter = 0;
 static uint64_t invoke_trace_invoke = 0;
 static uint64_t invoke_trace_child1 = 0;
 static uint64_t invoke_trace_child2 = 0;
 static uint64_t invoke_trace_exit = 0;
 static uint64_t invoke_trace_side_exit = 0;
 static uint64_t invoke_trace_success = 0;
+static uint64_t invoke_bloomfilter_hit = 0;
+static uint64_t invoke_bloomfilter_total = 0;
+static uint64_t invoke_bloomfilter_entry = 0;
 #define JIT_PROFILE_COUNT(COUNTER) ((COUNTER) += 1)
 #else
 #define JIT_PROFILE_COUNT(COUNTER)
@@ -469,6 +472,9 @@ static void *memory_pool_alloc(struct memory_pool *mp, size_t size)
 /* } memory pool */
 
 /* bloom_filter { */
+/*
+ * TODO(imasahiro) check hit/miss ratio and find hash algorithm for pointer
+ */
 static bloom_filter_t *bloom_filter_init(bloom_filter_t *bm)
 {
     bm->bits = 0;
@@ -477,12 +483,15 @@ static bloom_filter_t *bloom_filter_init(bloom_filter_t *bm)
 
 static void bloom_filter_add(bloom_filter_t *bm, uintptr_t bits)
 {
+    JIT_PROFILE_COUNT(invoke_bloomfilter_entry);
     bm->bits |= bits;
 }
 
 static int bloom_filter_contains(bloom_filter_t *bm, uintptr_t bits)
 {
+    JIT_PROFILE_COUNT(invoke_bloomfilter_total);
     if ((bm->bits & bits) == bits) {
+	JIT_PROFILE_COUNT(invoke_bloomfilter_hit);
 	return 1;
     }
     return 0;
@@ -1210,7 +1219,7 @@ static VALUE *trace_invoke(rb_jit_t *jit, jit_event_t *e, trace_t *trace)
     rb_control_frame_t *cfp = e->cfp;
     rb_thread_t *th = e->th;
     //JIT_PROFILE_ENTER("invoke trace");
-    JIT_PROFILE_COUNT(invoke_trace_enter);
+    JIT_PROFILE_COUNT(invoke_trace_invoke_enter);
     //_head:
     JIT_PROFILE_COUNT(invoke_trace_invoke);
     handler = trace->code(th, cfp);
@@ -1431,13 +1440,16 @@ static void jit_delete(rb_jit_t *jit)
 #ifdef ENABLE_PROFILE_TRACE_JIT
 #define DUMP_COUNT(COUNTER) \
     fprintf(stderr, #COUNTER "  %" PRIu64 "\n", invoke_##COUNTER)
-	DUMP_COUNT(trace_enter);
+	DUMP_COUNT(trace_invoke_enter);
 	DUMP_COUNT(trace_invoke);
 	DUMP_COUNT(trace_child1);
 	DUMP_COUNT(trace_child2);
 	DUMP_COUNT(trace_exit);
 	DUMP_COUNT(trace_side_exit);
 	DUMP_COUNT(trace_success);
+	DUMP_COUNT(bloomfilter_entry);
+	DUMP_COUNT(bloomfilter_hit);
+	DUMP_COUNT(bloomfilter_total);
 #undef DUMP_COUNT
 #endif
     }
@@ -1652,11 +1664,11 @@ static VALUE *trace_selection(rb_jit_t *jit, jit_event_t *e)
 
 VALUE *rb_jit_trace(rb_thread_t *th, rb_control_frame_t *reg_cfp, VALUE *reg_pc, int opcode)
 {
-    jit_event_t ebuf;
+    jit_event_t ebuf, *e;
     if (disable_jit) {
 	return reg_pc;
     }
-    jit_event_t *e = jit_event_init(&ebuf, current_jit, th, reg_cfp, reg_pc, opcode);
+    e = jit_event_init(&ebuf, current_jit, th, reg_cfp, reg_pc, opcode);
     return trace_selection(current_jit, e);
 }
 

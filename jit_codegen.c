@@ -62,7 +62,9 @@ static void buffer_dispose(buffer_t *buf)
 
 // cgen
 enum cgen_mode {
+#ifndef __STRICT_ANSI__
     PROCESS_MODE, // generate native code directly
+#endif
     FILE_MODE // generate temporary c-source file
 };
 
@@ -90,11 +92,14 @@ static void cgen_open(CGen *gen, enum cgen_mode mode, const char *path, int id)
     gen->mode = mode;
     gen->hdr = NULL;
     JIT_PROFILE_ENTER("c-code generation");
+#ifndef __STRICT_ANSI__
     if (gen->mode == PROCESS_MODE) {
 	cgen_setup_command(gen, path, "-");
 	gen->fp = popen(gen->cmd, "w");
     }
-    else {
+    else
+#endif
+    {
 	char fpath[512] = {};
 	snprintf(fpath, 512, "/tmp/ruby_jit.%d.%d.c", getpid(), id);
 	gen->fp = fopen(fpath, "w");
@@ -121,9 +126,16 @@ static int cgen_freeze(CGen *gen, int id)
 	    fprintf(stderr, "generated c-code is %s\n", gen->path);
 	}
 	fclose(gen->fp);
+#ifndef __STRICT_ANSI__
 	gen->fp = popen(gen->cmd, "w");
+#else
+#endif
     }
+#ifndef __STRICT_ANSI__
     success = pclose(gen->fp);
+#else
+    success = system(gen->cmd);
+#endif
     JIT_PROFILE_LEAVE("nativecode generation", JIT_DUMP_COMPILE_LOG > 0);
     if (gen->cmd_len > 0) {
 	gen->cmd_len = 0;

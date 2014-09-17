@@ -208,11 +208,9 @@ static void EmitPushFrame(trace_recorder_t *rec, jit_event_t *e, CALL_INFO ci, l
     int i, argc = ci->orig_argc + 1 /*recv*/;
     lir_t regs[argc];
     lir_t ret = NULL;
-    VALUE params[argc];
     variable_table_t *newtable = variable_table_init(&rec->mpool, NULL);
 
     for (i = 0; i < argc; i++) {
-	params[i] = TOPN(ci->orig_argc - i);
 	regs[ci->orig_argc - i] = _POP();
     }
 
@@ -760,7 +758,6 @@ static void record_invokeblock(trace_recorder_t *rec, jit_event_t *e)
     int i, argc = 1 /*recv*/ + ci->orig_argc;
     lir_t Rblock, ret;
     lir_t regs[ci->orig_argc + 1];
-    VALUE params[ci->orig_argc + 1];
 
     VALUE type;
     variable_table_t *newtable = variable_table_init(&rec->mpool, NULL);
@@ -798,7 +795,6 @@ static void record_invokeblock(trace_recorder_t *rec, jit_event_t *e)
     call_stack_push(rec->cur_bb->call_stack, newtable);
 
     for (i = 0; i < ci->orig_argc; i++) {
-	params[i] = TOPN(ci->orig_argc - i);
 	regs[ci->orig_argc - i] = _POP();
     }
 

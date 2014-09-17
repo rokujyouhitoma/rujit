@@ -832,6 +832,19 @@ vm.$(OBJEXT): {$(VPATH)}vm.c {$(VPATH)}gc.h {$(VPATH)}iseq.h \
   $(PROBES_H_INCLUDES) {$(VPATH)}probes_helper.h {$(VPATH)}vm_opts.h \
   {$(VPATH)}jit.h
 
+jit.$(OBJEXT): {$(VPATH)}jit.c {$(VPATH)}jit_opts.h \
+	{$(VPATH)}jit_prelude.c {$(VPATH)}jit_hashmap.c \
+	{$(VPATH)}jit_record.c {$(VPATH)}jit_codegen.c \
+	{$(VPATH)}jit_optimize.c {$(VPATH)}jit_cgen_cmd.h \
+	{$(VPATH)}lir.c {$(VPATH)}yarv2lir.c \
+	{$(VPATH)}eval_intern.h $(RUBY_H_INCLUDES) $(ENCODING_H_INCLUDES) \
+	$(VM_CORE_H_INCLUDES) {$(VPATH)}vm_insnhelper.h \
+	{$(VPATH)}vm_exec.h {$(VPATH)}insns.def {$(VPATH)}vmtc.inc \
+	{$(VPATH)}vm.inc {$(VPATH)}insns.inc \
+	{$(VPATH)}internal.h {$(VPATH)}vm.h {$(VPATH)}constant.h \
+	$(PROBES_H_INCLUDES) {$(VPATH)}probes_helper.h {$(VPATH)}vm_opts.h \
+	{$(VPATH)}jit.h
+
 lir.c: $(srcdir)/lir.def $(srcdir)/lir.rb \
   $(srcdir)/lir_template.h
 	$(ECHO) creating $@
@@ -849,17 +862,6 @@ jit_cgen_cmd.h: {$(VPATH)}ruby_jit.h $(srcdir)/make_pch.rb \
 	{$(VPATH)}lir_template.h {$(VPATH)}vm_exec.h \
 	{$(VPATH)}jit.c {$(VPATH)}jit.h
 	$(Q) $(BASERUBY) $(srcdir)/make_pch.rb . $(srcdir) $(CC) $(arch) > $@
-
-jit.$(OBJEXT): {$(VPATH)}jit.c {$(VPATH)}jit_opts.h \
-	{$(VPATH)}jit_prelude.c \
-	{$(VPATH)}jit_hashmap.c \
-	{$(VPATH)}jit_record.c \
-	{$(VPATH)}jit_codegen.c \
-	{$(VPATH)}jit_optimize.c \
-	{$(VPATH)}jit_cgen_cmd.h \
-	{$(VPATH)}lir.c {$(VPATH)}yarv2lir.c
-	@$(ECHO) compiling $<
-	$(Q) $(CC) $(CFLAGS) $(XCFLAGS) $(CPPFLAGS) $(COUTFLAG)$@ -c $<
 
 vm_dump.$(OBJEXT): {$(VPATH)}vm_dump.c $(RUBY_H_INCLUDES) \
   $(VM_CORE_H_INCLUDES) {$(VPATH)}addr2line.h \
